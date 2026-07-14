@@ -1,10 +1,16 @@
 using System.Text;
 using System.IO;
+using System.Text.Json.Serialization;
 
 namespace CheckMind.App.Core;
 
 public sealed class WorkstationProfileStore
 {
+    private static readonly System.Text.Json.JsonSerializerOptions SaveJsonOptions = new(JsonOptions.Default)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
     public string ProfilePath { get; }
 
     public WorkstationProfileStore(string profilePath)
@@ -37,7 +43,8 @@ public sealed class WorkstationProfileStore
     public void Save(WorkstationProfile profile)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(ProfilePath)!);
-        var json = System.Text.Json.JsonSerializer.Serialize(profile, JsonOptions.Default);
+        var normalized = profile.NormalizeForStorage();
+        var json = System.Text.Json.JsonSerializer.Serialize(normalized, SaveJsonOptions);
         File.WriteAllText(ProfilePath, json, new UTF8Encoding(false));
     }
 }

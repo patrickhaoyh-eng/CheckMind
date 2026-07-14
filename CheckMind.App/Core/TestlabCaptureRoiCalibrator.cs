@@ -197,11 +197,11 @@ public sealed class TestlabCaptureRoiCalibrator
                 targets.Add(new WorkstationCaptureTarget(targetKey, roi));
             }
 
-            var page = pages[i] with { CaptureTargets = targets.ToArray() };
-            if (keyNorm == WorkstationProfileKeys.Normalize("table_scan"))
+            var page = pages[i] with
             {
-                page = page with { CaptureRoiWindow = roi };
-            }
+                CaptureRoiWindow = null,
+                CaptureTargets = targets.ToArray()
+            };
             pages[i] = page;
             updated = true;
             break;
@@ -211,7 +211,6 @@ public sealed class TestlabCaptureRoiCalibrator
         {
             var page = new WorkstationPageProfile(
                 TabName: tabName,
-                CaptureRoiWindow: keyNorm == WorkstationProfileKeys.Normalize("table_scan") ? roi : null,
                 CaptureTargets: [new WorkstationCaptureTarget(targetKey, roi)]
             );
             pages.Add(page);
@@ -265,7 +264,7 @@ public sealed class TestlabCaptureRoiCalibrator
 
             pages[i] = pages[i] with
             {
-                TopSerialVerifySha256 = sha256,
+                TopSerialVerifySha256 = null,
                 VerifyTargets = verifyTargets.ToArray()
             };
             updated = true;
@@ -276,7 +275,6 @@ public sealed class TestlabCaptureRoiCalibrator
         {
             pages.Add(new WorkstationPageProfile(
                 TabName: tabName,
-                TopSerialVerifySha256: sha256,
                 VerifyTargets: [new WorkstationVerifyTarget("top_serial", roi, sha256)]
             ));
         }

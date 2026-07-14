@@ -15,6 +15,15 @@ public sealed record WorkstationProfile(
         => JsonSerializer.Deserialize<WorkstationProfile>(json, JsonOptions.Default)
            ?? throw new InvalidOperationException("Invalid WorkstationProfile json.");
 
+    public WorkstationProfile NormalizeForStorage()
+    {
+        var normalizedPages = (Pages ?? [])
+            .Select(static page => page.NormalizeForStorage())
+            .ToArray();
+
+        return this with { Pages = normalizedPages };
+    }
+
     public WorkstationTabClickTarget? FindTabClickTarget(string tabName)
     {
         var targetNorm = WorkstationProfileKeys.Normalize(tabName);
@@ -143,6 +152,108 @@ public sealed record WorkstationPageProfile(
 
         return null;
     }
+
+    public WorkstationPageProfile NormalizeForStorage()
+    {
+        var captureTargets = NormalizeCaptureTargets();
+        var verifyTargets = NormalizeVerifyTargets();
+
+        var hasStructuredScanCapture = captureTargets.Any(static target =>
+            WorkstationProfileKeys.IsTableScanCaptureKey(WorkstationProfileKeys.Normalize(target.Key)) &&
+            target.RoiWindow is not null);
+        var hasStructuredTabVerify = verifyTargets.Any(static target =>
+            WorkstationProfileKeys.IsDefaultVerifyKey(WorkstationProfileKeys.Normalize(target.Key)) &&
+            target.RoiWindow is not null &&
+            !string.IsNullOrWhiteSpace(target.Sha256));
+        var hasStructuredTopSerial = verifyTargets.Any(static target =>
+            WorkstationProfileKeys.IsTopSerialVerifyKey(WorkstationProfileKeys.Normalize(target.Key)) &&
+            target.RoiWindow is not null &&
+            !string.IsNullOrWhiteSpace(target.Sha256));
+
+        return this with
+        {
+            CaptureRoiWindow = hasStructuredScanCapture ? null : CaptureRoiWindow,
+            ScrollAnchor = ScrollAnchor,
+            VerifyRoiWindow = hasStructuredTabVerify ? null : VerifyRoiWindow,
+            VerifySha256 = hasStructuredTabVerify ? null : VerifySha256,
+            TopSerialVerifySha256 = hasStructuredTopSerial ? null : TopSerialVerifySha256,
+            CaptureTargets = captureTargets.Length == 0 ? null : captureTargets,
+            VerifyTargets = verifyTargets.Length == 0 ? null : verifyTargets
+        };
+    }
+
+    private WorkstationCaptureTarget[] NormalizeCaptureTargets()
+    {
+        var targets = (CaptureTargets ?? [])
+            .ToList();
+
+        if (CaptureRoiWindow is not null)
+        {
+            UpsertCaptureTarget(targets, "table_scan", CaptureRoiWindow);
+        }
+
+        return targets
+            .OrderBy(static item => WorkstationProfileKeys.Normalize(item.Key))
+            .ToArray();
+    }
+
+    private WorkstationVerifyTarget[] NormalizeVerifyTargets()
+    {
+        var targets = (VerifyTargets ?? [])
+            .ToList();
+
+        if (VerifyRoiWindow is not null && !string.IsNullOrWhiteSpace(VerifySha256))
+        {
+            UpsertVerifyTarget(targets, "tab_verify", VerifyRoiWindow, VerifySha256);
+        }
+
+        if (!string.IsNullOrWhiteSpace(TopSerialVerifySha256))
+        {
+            UpsertVerifyTarget(targets, "top_serial", null, TopSerialVerifySha256);
+        }
+
+        return targets
+            .OrderBy(static item => WorkstationProfileKeys.Normalize(item.Key))
+            .ToArray();
+    }
+
+    private static void UpsertCaptureTarget(List<WorkstationCaptureTarget> targets, string key, BBox? roiWindow)
+    {
+        var keyNorm = WorkstationProfileKeys.Normalize(key);
+        for (var i = 0; i < targets.Count; i++)
+        {
+            if (WorkstationProfileKeys.Normalize(targets[i].Key) != keyNorm)
+            {
+                continue;
+            }
+
+            targets[i] = targets[i] with { RoiWindow = targets[i].RoiWindow ?? roiWindow };
+            return;
+        }
+
+        targets.Add(new WorkstationCaptureTarget(key, roiWindow));
+    }
+
+    private static void UpsertVerifyTarget(List<WorkstationVerifyTarget> targets, string key, BBox? roiWindow, string? sha256)
+    {
+        var keyNorm = WorkstationProfileKeys.Normalize(key);
+        for (var i = 0; i < targets.Count; i++)
+        {
+            if (WorkstationProfileKeys.Normalize(targets[i].Key) != keyNorm)
+            {
+                continue;
+            }
+
+            targets[i] = targets[i] with
+            {
+                RoiWindow = targets[i].RoiWindow ?? roiWindow,
+                Sha256 = string.IsNullOrWhiteSpace(targets[i].Sha256) ? sha256 : targets[i].Sha256
+            };
+            return;
+        }
+
+        targets.Add(new WorkstationVerifyTarget(key, roiWindow, sha256));
+    }
 }
 
 public sealed record WorkstationCaptureTarget(
@@ -170,6 +281,9 @@ internal static class WorkstationProfileKeys
 
     public static bool IsDefaultCaptureKey(string normalizedKey)
         => normalizedKey is "default" or "main" or "maintable" or "table" or "capture";
+
+    public static bool IsTableScanCaptureKey(string normalizedKey)
+        => normalizedKey is "tablescan" or "scan" or "tablecapture";
 
     public static bool IsDefaultVerifyKey(string normalizedKey)
         => normalizedKey is "default" or "main" or "title" or "tabverify" or "verify";

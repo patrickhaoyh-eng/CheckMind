@@ -1092,6 +1092,7 @@ public sealed class TestlabAutomationRunner
             var stitchedPath = uniqueChunks.Count > 0
                 ? TryWriteStitchedTableEvidence(run, screenshots, entry.TableName, uniqueChunks)
                 : null;
+            WriteTableEvidenceReport(run, entry.TabName, entry.TableName, chunks, uniqueChunks, scrollEvents, stitchedPath);
             results.Add(new TestlabTableScanResult(entry.TabName, entry.TableName, entry.TableRoiWindow, entry.TableRoiScreen, chunks, uniqueChunks.Count, stitchedPath));
         }
 
@@ -1438,6 +1439,37 @@ public sealed class TestlabAutomationRunner
         }
 
         return unique;
+    }
+
+    private static void WriteTableEvidenceReport(
+        RunContext run,
+        string tabName,
+        string tableName,
+        IReadOnlyList<TestlabTableScanChunkResult> chunks,
+        IReadOnlyList<TestlabTableScanChunkResult> uniqueChunks,
+        IReadOnlyList<TestlabTableScrollEvent> scrollEvents,
+        string? stitchedPath
+    )
+    {
+        var changedEventCount = scrollEvents.Count(static item => item.Changed);
+        var terminalNoChangeEventCount = scrollEvents.Count(static item => !item.Changed);
+        var expectedUniqueChunkCount = chunks.Count == 0 ? 0 : changedEventCount + 1;
+        var report = new TestlabTableEvidenceReport(
+            TabName: tabName,
+            TableName: tableName,
+            ChunkCount: chunks.Count,
+            UniqueChunkCount: uniqueChunks.Count,
+            ChangedEventCount: changedEventCount,
+            TerminalNoChangeEventCount: terminalNoChangeEventCount,
+            ExpectedUniqueChunkCount: expectedUniqueChunkCount,
+            DedupKey: "SerialSha256",
+            IsConsistent: uniqueChunks.Count == expectedUniqueChunkCount,
+            StitchedScreenshotPath: stitchedPath,
+            UniqueChunkScreenshotPaths: uniqueChunks.Select(static item => item.ScreenshotPath).ToArray()
+        );
+
+        var path = Path.Combine(run.RunDirectory, $"table_evidence_{Normalize(tableName)}.json");
+        File.WriteAllText(path, report.ToJson(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
     private static string? TryWriteStitchedTableEvidence(

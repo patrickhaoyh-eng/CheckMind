@@ -95,7 +95,7 @@ public sealed class TestlabPreflightCalibrationChecker
                 failures.Add(new PreflightCalibrationFailure(
                     Key: "tab_verify_missing",
                     Message: $"缺少页签验真签名：{tab}",
-                    Expected: "VerifyRoiWindow + VerifySha256",
+                    Expected: "VerifyTargets.tab_verify (RoiWindow + Sha256) configured",
                     Actual: "null",
                     Suggestion: "请先执行验真签名标定。"
                 ));

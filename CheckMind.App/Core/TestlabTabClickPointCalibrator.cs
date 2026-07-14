@@ -43,8 +43,7 @@ public sealed class TestlabTabClickPointCalibrator
             ? store.Load()
             : CreateProfileTemplate(measured, tabs);
 
-        Directory.CreateDirectory(Path.GetDirectoryName(store.ProfilePath)!);
-        File.WriteAllText(store.ProfilePath, System.Text.Json.JsonSerializer.Serialize(profile, JsonOptions.Default), new UTF8Encoding(false));
+        store.Save(profile);
 
         using var hotkey = reuseExisting ? null : new HotkeyListener(Win32Native.VK_F8);
 
@@ -108,7 +107,7 @@ public sealed class TestlabTabClickPointCalibrator
 
                 point = new WindowPoint(localX, localY);
                 profile = SetTabClickPoint(profile, tab, point, tabs);
-                File.WriteAllText(store.ProfilePath, System.Text.Json.JsonSerializer.Serialize(profile, JsonOptions.Default), new UTF8Encoding(false));
+                store.Save(profile);
             }
 
             TestlabDebugMarkers.WritePhase(
@@ -229,7 +228,7 @@ public sealed class TestlabTabClickPointCalibrator
                     _ = screenshots.SaveDebugPng(run, $"calib_{NormalizeKey(tab)}_verify_roi_try", roiBytes);
                 }
                 profile = SetVerifySignature(profile, tab, roi, sha, tabs);
-                File.WriteAllText(store.ProfilePath, System.Text.Json.JsonSerializer.Serialize(profile, JsonOptions.Default), new UTF8Encoding(false));
+                store.Save(profile);
                 var payloadPath = Path.Combine(run.RunDirectory, $"calib_{NormalizeKey(tab)}_verify.json");
                 File.WriteAllText(
                     payloadPath,
@@ -388,8 +387,8 @@ public sealed class TestlabTabClickPointCalibrator
 
                 pages[i] = pages[i] with
                 {
-                    VerifyRoiWindow = roi,
-                    VerifySha256 = sha256,
+                    VerifyRoiWindow = null,
+                    VerifySha256 = null,
                     VerifyTargets = verifyTargets.ToArray()
                 };
                 updated = true;
@@ -420,8 +419,6 @@ public sealed class TestlabTabClickPointCalibrator
 
             pages.Add(template with
             {
-                VerifyRoiWindow = roi,
-                VerifySha256 = sha256,
                 VerifyTargets = verifyTargets.ToArray()
             });
         }

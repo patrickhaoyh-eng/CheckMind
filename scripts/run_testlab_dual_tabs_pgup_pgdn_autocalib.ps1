@@ -6,10 +6,102 @@ Add-Type -AssemblyName PresentationFramework
 
 $embeddedNoDialogs = (($env:CHECKMIND_EMBEDDED_NO_DIALOGS) + "").Trim()
 $embeddedNoDialogs = $embeddedNoDialogs -eq "1" -or $embeddedNoDialogs -eq "true"
+$finalRunMarkerPath = Join-Path $env:TEMP "checkmind_testlab_autocalib_last_run.txt"
 
 function Decode-Utf8Base64([string]$value)
 {
     return [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($value))
+}
+
+function Get-LastRunFromMarker
+{
+    $lastRunPath = Join-Path $env:TEMP "checkmind_testlab_last_run.txt"
+    if (!(Test-Path $lastRunPath))
+    {
+        return ""
+    }
+
+    $value = (Get-Content -Raw $lastRunPath)
+    if ($null -eq $value)
+    {
+        return ""
+    }
+
+    return $value.Trim()
+}
+
+function Get-LatestProbeRun([string]$runsRoot)
+{
+    if ([string]::IsNullOrWhiteSpace($runsRoot) -or !(Test-Path $runsRoot))
+    {
+        return ""
+    }
+
+    $dirs = Get-ChildItem -LiteralPath $runsRoot -Directory -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne "_config" }
+    if ($null -eq $dirs -or $dirs.Count -eq 0)
+    {
+        return ""
+    }
+
+    return ($dirs | Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+}
+
+function Resolve-LastRun([string]$runsRoot)
+{
+    for ($i = 0; $i -lt 50; $i++)
+    {
+        $fromMarker = Get-LastRunFromMarker
+        if (![string]::IsNullOrWhiteSpace($fromMarker) -and (Test-Path $fromMarker))
+        {
+            return $fromMarker
+        }
+
+        Start-Sleep -Milliseconds 100
+    }
+
+    $latest = Get-LatestProbeRun $runsRoot
+    if (![string]::IsNullOrWhiteSpace($latest) -and (Test-Path $latest))
+    {
+        return $latest
+    }
+
+    return ""
+}
+
+function Wait-ForRunCompletion([string]$runDir)
+{
+    if ([string]::IsNullOrWhiteSpace($runDir) -or !(Test-Path $runDir))
+    {
+        return $false
+    }
+
+    $signals = @(
+        (Join-Path $runDir "results.json"),
+        (Join-Path $runDir "coverage.json"),
+        (Join-Path $runDir "testlab_phases.log")
+    )
+
+    for ($i = 0; $i -lt 100; $i++)
+    {
+        $ready = $true
+        foreach ($signal in $signals)
+        {
+            if (!(Test-Path $signal))
+            {
+                $ready = $false
+                break
+            }
+        }
+
+        if ($ready)
+        {
+            return $true
+        }
+
+        Start-Sleep -Milliseconds 100
+    }
+
+    return $false
 }
 
 $message = @(
@@ -37,8 +129,11 @@ if (-not $embeddedNoDialogs)
     }
 }
 
+Remove-Item $finalRunMarkerPath -ErrorAction SilentlyContinue
+
 Write-Host "Step 1/2: Recalibrate verify signature (reuse ClickPoint)"
 $env:CHECKMIND_CAPTURE_PROMPT = "0"
+$env:CHECKMIND_EMBEDDED_NO_DIALOGS = "1"
 powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\calibrate_verify_signature_reuse.ps1")
 if ($LASTEXITCODE -ne 0)
 {
@@ -53,17 +148,23 @@ if ($LASTEXITCODE -ne 0)
 
 Write-Host "Step 2/2: Run dual-tabs capture (PgUp/PgDn)"
 $env:CHECKMIND_CAPTURE_PROMPT = "0"
+$env:CHECKMIND_EMBEDDED_NO_DIALOGS = "1"
 powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\run_testlab_dual_tabs_pgup_pgdn.ps1")
 if ($LASTEXITCODE -ne 0)
 {
     exit $LASTEXITCODE
 }
 
-$lastRunPath = Join-Path $env:TEMP "checkmind_testlab_last_run.txt"
-$lastRun = ""
-if (Test-Path $lastRunPath)
+$runsRoot = Join-Path $repoRoot "artifacts\probe-runs"
+$lastRun = Resolve-LastRun $runsRoot
+if (-not (Wait-ForRunCompletion $lastRun))
 {
-    $lastRun = (Get-Content -Raw $lastRunPath).Trim()
+    Write-Warning "Final run completion evidence not fully ready; fallback to latest run directory."
+}
+
+if (![string]::IsNullOrWhiteSpace($lastRun) -and (Test-Path $lastRun))
+{
+    Set-Content -LiteralPath $finalRunMarkerPath -Value $lastRun -NoNewline
 }
 
 $evidenceDir = if (![string]::IsNullOrWhiteSpace($lastRun)) { Join-Path $lastRun "screenshots\\evidence" } else { "" }
