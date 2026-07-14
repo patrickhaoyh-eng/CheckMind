@@ -1,0 +1,29 @@
+<Window x:Class="CheckMind.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:CheckMind.App"
+        mc:Ignorable="d"
+        Title="CheckMind" Height="450" Width="800">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <StackPanel Orientation="Horizontal" Margin="12">
+            <Button Width="160" Height="32" Click="CreateRun_Click">创建核验任务</Button>
+            <Button Width="260" Height="32" Margin="12,0,0,0" Click="RecalibrateVerifySignature_Click">复用 ClickPoint 重新标定验真签名</Button>
+            <Button Width="180" Height="32" Margin="12,0,0,0" Click="CalibrateCaptureRoi_Click">标定截图框</Button>
+        </StackPanel>
+
+        <TextBox x:Name="OutputTextBox"
+                 Grid.Row="1"
+                 Margin="12"
+                 IsReadOnly="True"
+                 TextWrapping="Wrap"
+                 VerticalScrollBarVisibility="Auto"
+                 HorizontalScrollBarVisibility="Auto"/>
+    </Grid>
+</Window>

@@ -1,0 +1,161 @@
+{
+  "Environment": {
+    "TargetMonitorIndex": 0,
+    "TargetWidth": 1920,
+    "TargetHeight": 1080,
+    "DpiScalePercent": 100
+  },
+  "Window": {
+    "MustBeMaximized": true,
+    "WindowRectScreen": {
+      "X": 0,
+      "Y": 0,
+      "Width": 1920,
+      "Height": 1080
+    }
+  },
+  "Tolerances": {
+    "PixelTolerance": 4
+  },
+  "Navigation": {
+    "TabClickPoints": [
+      {
+        "TabName": "Channel Setup",
+        "ClickPoint": {
+          "X": 302,
+          "Y": 1008
+        }
+      },
+      {
+        "TabName": "Sine Setup",
+        "ClickPoint": {
+          "X": 414,
+          "Y": 1010
+        }
+      }
+    ]
+  },
+  "DialogActions": [],
+  "Pages": [
+    {
+      "TabName": "Channel Setup",
+      "CaptureRoiWindow": {
+        "X": 9,
+        "Y": 158,
+        "Width": 1898,
+        "Height": 835
+      },
+      "ScrollAnchor": null,
+      "VerifyRoiWindow": {
+        "X": 0,
+        "Y": 72,
+        "Width": 348,
+        "Height": 48
+      },
+      "VerifySha256": "F34F33D03D06526E0C66A70FFC2138DCE0D89D86ED77178D571B2897A4DDDAA0",
+      "TopSerialVerifySha256": "004EE068CFB14D6FBBDFEB09BCAFE232E166B9383723BC8C74E08D46661F9C79",
+      "CaptureTargets": [
+        {
+          "Key": "table_entry",
+          "RoiWindow": {
+            "X": 8,
+            "Y": 104,
+            "Width": 1917,
+            "Height": 889
+          }
+        },
+        {
+          "Key": "table_scan",
+          "RoiWindow": {
+            "X": 9,
+            "Y": 158,
+            "Width": 1898,
+            "Height": 835
+          }
+        }
+      ],
+      "VerifyTargets": [
+        {
+          "Key": "tab_verify",
+          "RoiWindow": {
+            "X": 0,
+            "Y": 72,
+            "Width": 348,
+            "Height": 48
+          },
+          "Sha256": "F34F33D03D06526E0C66A70FFC2138DCE0D89D86ED77178D571B2897A4DDDAA0"
+        },
+        {
+          "Key": "top_serial",
+          "RoiWindow": {
+            "X": 9,
+            "Y": 158,
+            "Width": 252,
+            "Height": 128
+          },
+          "Sha256": "004EE068CFB14D6FBBDFEB09BCAFE232E166B9383723BC8C74E08D46661F9C79"
+        }
+      ]
+    },
+    {
+      "TabName": "Sine Setup",
+      "CaptureRoiWindow": {
+        "X": 10,
+        "Y": 160,
+        "Width": 1168,
+        "Height": 513
+      },
+      "ScrollAnchor": null,
+      "VerifyRoiWindow": {
+        "X": 0,
+        "Y": 72,
+        "Width": 348,
+        "Height": 48
+      },
+      "VerifySha256": "6070B2AF1814DB00F9FC70987C775F48C635C269DC0E250C0C0FF80B047ECC59",
+      "TopSerialVerifySha256": "C9D603D83FDE5EAFA4B9DE6B2C47AAFA8DBDAAADD14D0911EB9BF2099B6ED3EC",
+      "CaptureTargets": [
+        {
+          "Key": "table_entry",
+          "RoiWindow": {
+            "X": 8,
+            "Y": 104,
+            "Width": 1918,
+            "Height": 889
+          }
+        },
+        {
+          "Key": "table_scan",
+          "RoiWindow": {
+            "X": 10,
+            "Y": 160,
+            "Width": 1168,
+            "Height": 513
+          }
+        }
+      ],
+      "VerifyTargets": [
+        {
+          "Key": "tab_verify",
+          "RoiWindow": {
+            "X": 0,
+            "Y": 72,
+            "Width": 348,
+            "Height": 48
+          },
+          "Sha256": "6070B2AF1814DB00F9FC70987C775F48C635C269DC0E250C0C0FF80B047ECC59"
+        },
+        {
+          "Key": "top_serial",
+          "RoiWindow": {
+            "X": 10,
+            "Y": 160,
+            "Width": 164,
+            "Height": 103
+          },
+          "Sha256": "C9D603D83FDE5EAFA4B9DE6B2C47AAFA8DBDAAADD14D0911EB9BF2099B6ED3EC"
+        }
+      ]
+    }
+  ]
+}

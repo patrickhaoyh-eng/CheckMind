@@ -1,0 +1,26 @@
+# Build outputs
+bin/
+obj/
+publish/
+out/
+
+# IDE and local tooling
+.vs/
+.vscode/
+*.user
+*.suo
+*.tmp
+*.log
+
+# Local scratch files
+stdout
+
+# Runtime artifacts and evidence
+artifacts/probe-runs/*
+!artifacts/probe-runs/_config/
+!artifacts/probe-runs/_config/**
+artifacts/testlab-probe/
+
+# App runtime outputs
+CheckMind.App/bin/
+CheckMind.App/obj/

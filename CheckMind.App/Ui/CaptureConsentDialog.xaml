@@ -1,0 +1,40 @@
+<Window x:Class="CheckMind.App.Ui.CaptureConsentDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="CheckMind"
+        WindowStartupLocation="CenterScreen"
+        SizeToContent="WidthAndHeight"
+        ResizeMode="NoResize"
+        Topmost="True">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <TextBlock Grid.Row="0"
+                   Width="420"
+                   TextWrapping="Wrap"
+                   FontSize="14"
+                   Text="即将开始屏幕抓取与比对，期间会临时接管鼠标操作。请确认已保存工作并保持 Testlab 在前台。"/>
+        <CheckBox Grid.Row="1"
+                  x:Name="RememberCheckBox"
+                  Margin="0,12,0,0"
+                  Content="下次不再提示（记住选择）"/>
+        <StackPanel Grid.Row="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,16,0,0">
+            <Button x:Name="CancelButton"
+                    MinWidth="96"
+                    Margin="0,0,10,0"
+                    IsCancel="True"
+                    Content="取消"/>
+            <Button x:Name="OkButton"
+                    MinWidth="140"
+                    IsDefault="True"
+                    Content="开始抓取（接管鼠标）"/>
+        </StackPanel>
+    </Grid>
+</Window>
+
