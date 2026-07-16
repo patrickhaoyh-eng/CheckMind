@@ -35,7 +35,25 @@
       }
     ]
   },
-  "DialogActions": [],
+  "DialogActions": [
+    {
+      "DialogKey": "sine_setup_channel_safety_parameters",
+      "ClickPoint": {
+        "X": 1102,
+        "Y": 147
+      },
+      "ClickSequence": [
+        {
+          "X": 1102,
+          "Y": 147
+        },
+        {
+          "X": 1102,
+          "Y": 174
+        }
+      ]
+    }
+  ],
   "Pages": [
     {
       "TabName": "Channel Setup",
@@ -68,7 +86,7 @@
             "Width": 348,
             "Height": 48
           },
-          "Sha256": "F34F33D03D06526E0C66A70FFC2138DCE0D89D86ED77178D571B2897A4DDDAA0"
+          "Sha256": "FDC9B3243C3CACF85C364F0D72265A544E165B025647F1BEC1EE751000806BB7"
         },
         {
           "Key": "top_serial",
@@ -113,7 +131,7 @@
             "Width": 348,
             "Height": 48
           },
-          "Sha256": "6070B2AF1814DB00F9FC70987C775F48C635C269DC0E250C0C0FF80B047ECC59"
+          "Sha256": "2658CEFC82BA3B284687A259D28941ED04512AED36427C14FFB10BFA87C27B11"
         },
         {
           "Key": "top_serial",
@@ -124,6 +142,74 @@
             "Height": 103
           },
           "Sha256": "C9D603D83FDE5EAFA4B9DE6B2C47AAFA8DBDAAADD14D0911EB9BF2099B6ED3EC"
+        }
+      ]
+    }
+  ],
+  "ChildWindows": [
+    {
+      "WindowKey": "define_notch_profiles",
+      "OpenClickPoint": {
+        "X": 1086,
+        "Y": 147
+      },
+      "OpenClickSequence": [
+        {
+          "X": 1086,
+          "Y": 147
+        },
+        {
+          "X": 1072,
+          "Y": 213
+        }
+      ],
+      "MustMaximize": true,
+      "ListTargets": [
+        {
+          "Key": "notch_profiles_list",
+          "RoiWindow": {
+            "X": 15,
+            "Y": 164,
+            "Width": 201,
+            "Height": 420
+          },
+          "FirstRowAnchor": {
+            "X": 31,
+            "Y": 196
+          },
+          "RowHeight": 20,
+          "ActionClickPoint": {
+            "X": 48,
+            "Y": 615
+          }
+        }
+      ]
+    },
+    {
+      "WindowKey": "notch_profile",
+      "MustMaximize": true,
+      "CloseClickPoint": {
+        "X": 1895,
+        "Y": 19
+      },
+      "CaptureTargets": [
+        {
+          "Key": "table_scan",
+          "RoiWindow": {
+            "X": 312,
+            "Y": 33,
+            "Width": 1595,
+            "Height": 526
+          },
+          "PagingFocusPointWindow": {
+            "X": 616,
+            "Y": 220
+          },
+          "PagingActivationPointWindow": {
+            "X": 616,
+            "Y": 220
+          },
+          "PagingPreparationMode": "activation_foreground"
         }
       ]
     }

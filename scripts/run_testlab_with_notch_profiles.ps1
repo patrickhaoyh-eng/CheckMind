@@ -1,3 +1,7 @@
+param(
+    [string]$NotchProfileIndexes = "1"
+)
+
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -13,6 +17,13 @@ if ([string]::IsNullOrWhiteSpace($startConfirmPrompt))
 }
 $startConfirmPrompt = $startConfirmPrompt -eq "1" -or $startConfirmPrompt -eq "true"
 
+$autoRecalibrateVerify = (($env:CHECKMIND_AUTO_RECALIBRATE_VERIFY_SIGNATURE) + "").Trim()
+if ([string]::IsNullOrWhiteSpace($autoRecalibrateVerify))
+{
+    $autoRecalibrateVerify = "1"
+}
+$autoRecalibrateVerify = $autoRecalibrateVerify -eq "1" -or $autoRecalibrateVerify -eq "true"
+
 $env:CHECKMIND_RUNS_ROOT = Join-Path $repoRoot "artifacts\probe-runs"
 $env:CHECKMIND_WORKSTATION_PROFILE_PATH = Join-Path $repoRoot "artifacts\probe-runs\_config\workstation_profile.json"
 
@@ -20,6 +31,7 @@ $env:CHECKMIND_RUN_TESTLAB = "1"
 $env:CHECKMIND_CAPTURE_MODE = "fixed"
 $env:CHECKMIND_FAST_TAB_SWITCH = "1"
 $env:CHECKMIND_TESTLAB_TABS = "Channel Setup,Sine Setup"
+$env:CHECKMIND_NOTCH_PROFILE_INDEXES = $NotchProfileIndexes
 
 if ([string]::IsNullOrWhiteSpace($env:CHECKMIND_CAPTURE_PROMPT))
 {
@@ -95,43 +107,13 @@ function Decode-Utf8Base64([string]$value)
     return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($value))
 }
 
-function Open-RunTarget([string]$runDir)
-{
-    if ([string]::IsNullOrWhiteSpace($runDir) -or !(Test-Path $runDir))
-    {
-        return
-    }
-
-    $evidenceDir = Join-Path $runDir "screenshots\evidence"
-    $openTarget = if (Test-Path $evidenceDir) { $evidenceDir } else { $runDir }
-
-    try
-    {
-        Invoke-Item -LiteralPath $openTarget
-    }
-    catch
-    {
-    }
-
-    try
-    {
-        Set-Clipboard -Value $runDir
-    }
-    catch
-    {
-    }
-}
-
-$lastRunMarker = Join-Path $env:TEMP "checkmind_testlab_last_run.txt"
-$errorMarker = Join-Path $env:TEMP "checkmind_testlab_error.txt"
-Remove-Item $lastRunMarker -ErrorAction SilentlyContinue
-Remove-Item $errorMarker -ErrorAction SilentlyContinue
-
 if (-not $embeddedNoDialogs -and $startConfirmPrompt)
 {
     $message = @(
-        (Decode-Utf8Base64 "5Y2z5bCG5byA5aeLIENoYW5uZWwgU2V0dXAg5LiOIFNpbmUgU2V0dXAg55qE6Ieq5Yqo5oqT5Y+W44CC"),
+        (Decode-Utf8Base64 "5Y2z5bCG5byA5aeLIENoYW5uZWwgU2V0dXDjgIFTaW5lIFNldHVwIOS4jiBOb3RjaCBQcm9maWxlcyDnmoToh6rliqjmipPlj5bjgII="),
         (Decode-Utf8Base64 "54K55Ye74oCc56Gu5a6a4oCd5ZCO77yM6ISa5pys5Lya5o6l566h6byg5qCH5bm25bCGIFRlc3RsYWIg5YiH5Yiw5YmN5Y+w44CC"),
+        "",
+        ((Decode-Utf8Base64 "Tm90Y2ggUHJvZmlsZSDluo/lj7c6IA==") + $NotchProfileIndexes),
         "",
         (Decode-Utf8Base64 "6K+35YGc5q2i56e75Yqo6byg5qCH77yM5bm25L+d5oyBIFRlc3RsYWIg56qX5Y+j5Y+v6KeB44CC")
     ) -join "`r`n"
@@ -151,12 +133,25 @@ if (-not $embeddedNoDialogs -and $startConfirmPrompt)
 }
 
 $env:CHECKMIND_CAPTURE_PROMPT = "0"
+$env:CHECKMIND_EMBEDDED_NO_DIALOGS = "1"
+
+if ($autoRecalibrateVerify)
+{
+    Write-Host "Preflight: recalibrate verify signature (reuse ClickPoint)"
+    powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\calibrate_verify_signature_reuse.ps1")
+    if ($LASTEXITCODE -ne 0)
+    {
+        exit $LASTEXITCODE
+    }
+}
 
 Write-Host ("CHECKMIND_RUNS_ROOT=" + $env:CHECKMIND_RUNS_ROOT)
 Write-Host ("CHECKMIND_WORKSTATION_PROFILE_PATH=" + $env:CHECKMIND_WORKSTATION_PROFILE_PATH)
 Write-Host ("CHECKMIND_RUN_TESTLAB=" + $env:CHECKMIND_RUN_TESTLAB)
 Write-Host ("CHECKMIND_TESTLAB_TABS=" + $env:CHECKMIND_TESTLAB_TABS)
+Write-Host ("CHECKMIND_NOTCH_PROFILE_INDEXES=" + $env:CHECKMIND_NOTCH_PROFILE_INDEXES)
 Write-Host ("CHECKMIND_CAPTURE_PROMPT=" + $env:CHECKMIND_CAPTURE_PROMPT)
+Write-Host ("CHECKMIND_AUTO_RECALIBRATE_VERIFY_SIGNATURE=" + $autoRecalibrateVerify)
 
 dotnet build -c Release $project
 if ($LASTEXITCODE -ne 0)
@@ -176,11 +171,15 @@ $lastRun = Resolve-LastRun $env:CHECKMIND_RUNS_ROOT
 if (![string]::IsNullOrWhiteSpace($lastRun))
 {
     Write-Host ("last_run=" + $lastRun)
-    $embeddedNoDialogs = (($env:CHECKMIND_EMBEDDED_NO_DIALOGS) + "").Trim()
-    $embeddedNoDialogs = $embeddedNoDialogs -eq "1" -or $embeddedNoDialogs -eq "true"
     if (-not $embeddedNoDialogs)
     {
-        Open-RunTarget $lastRun
+        try
+        {
+            Invoke-Item -LiteralPath $lastRun
+        }
+        catch
+        {
+        }
     }
 }
 

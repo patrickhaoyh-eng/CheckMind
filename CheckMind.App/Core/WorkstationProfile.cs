@@ -8,7 +8,8 @@ public sealed record WorkstationProfile(
     WorkstationProfileTolerances Tolerances,
     WorkstationProfileNavigation? Navigation = null,
     WorkstationDialogActionProfile[]? DialogActions = null,
-    WorkstationPageProfile[]? Pages = null
+    WorkstationPageProfile[]? Pages = null,
+    WorkstationChildWindowProfile[]? ChildWindows = null
 )
 {
     public static WorkstationProfile FromJson(string json)
@@ -65,6 +66,20 @@ public sealed record WorkstationProfile(
 
         return null;
     }
+
+    public WorkstationChildWindowProfile? FindChildWindowProfile(string windowKey)
+    {
+        var targetNorm = WorkstationProfileKeys.Normalize(windowKey);
+        foreach (var item in ChildWindows ?? [])
+        {
+            if (WorkstationProfileKeys.Normalize(item.WindowKey) == targetNorm)
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
 }
 
 public sealed record WorkstationProfileEnvironment(
@@ -95,9 +110,26 @@ public sealed record WorkstationTabClickTarget(
 public sealed record WorkstationDialogActionProfile(
     string DialogKey,
     WindowPoint? ClickPoint = null,
+    WindowPoint[]? ClickSequence = null,
     BBox? VerifyRoiWindow = null,
     string? VerifySha256 = null
-);
+)
+{
+    public WindowPoint[] GetClickSequence()
+    {
+        var points = (ClickSequence ?? [])
+            .Where(p => p.X != 0 || p.Y != 0)
+            .ToArray();
+        if (points.Length > 0)
+        {
+            return points;
+        }
+
+        return ClickPoint is WindowPoint point && (point.X != 0 || point.Y != 0)
+            ? [point]
+            : [];
+    }
+}
 
 public sealed record WorkstationPageProfile(
     string TabName,
@@ -258,13 +290,108 @@ public sealed record WorkstationPageProfile(
 
 public sealed record WorkstationCaptureTarget(
     string Key,
-    BBox? RoiWindow = null
+    BBox? RoiWindow = null,
+    WindowPoint? PagingFocusPointWindow = null,
+    WindowPoint? PagingActivationPointWindow = null,
+    string? PagingPreparationMode = null
 );
 
 public sealed record WorkstationVerifyTarget(
     string Key,
     BBox? RoiWindow = null,
     string? Sha256 = null
+);
+
+public sealed record WorkstationChildWindowProfile(
+    string WindowKey,
+    WindowPoint? OpenClickPoint = null,
+    WindowPoint[]? OpenClickSequence = null,
+    bool MustMaximize = true,
+    WindowPoint? CloseClickPoint = null,
+    WorkstationTabClickTarget[]? TabClickPoints = null,
+    WorkstationCaptureTarget[]? CaptureTargets = null,
+    WorkstationVerifyTarget[]? VerifyTargets = null,
+    WorkstationListNavigationTarget[]? ListTargets = null
+)
+{
+    public WindowPoint[] GetOpenClickSequence()
+    {
+        var points = (OpenClickSequence ?? [])
+            .Where(p => p.X != 0 || p.Y != 0)
+            .ToArray();
+        if (points.Length > 0)
+        {
+            return points;
+        }
+
+        return OpenClickPoint is WindowPoint point && (point.X != 0 || point.Y != 0)
+            ? [point]
+            : [];
+    }
+
+    public WorkstationTabClickTarget? FindTabClickTarget(string key)
+    {
+        var targetNorm = WorkstationProfileKeys.Normalize(key);
+        foreach (var item in TabClickPoints ?? [])
+        {
+            if (WorkstationProfileKeys.Normalize(item.TabName) == targetNorm)
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    public WorkstationCaptureTarget? FindCaptureTarget(string key)
+    {
+        var targetNorm = WorkstationProfileKeys.Normalize(key);
+        foreach (var item in CaptureTargets ?? [])
+        {
+            if (WorkstationProfileKeys.Normalize(item.Key) == targetNorm)
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    public WorkstationVerifyTarget? FindVerifyTarget(string key)
+    {
+        var targetNorm = WorkstationProfileKeys.Normalize(key);
+        foreach (var item in VerifyTargets ?? [])
+        {
+            if (WorkstationProfileKeys.Normalize(item.Key) == targetNorm)
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    public WorkstationListNavigationTarget? FindListTarget(string key)
+    {
+        var targetNorm = WorkstationProfileKeys.Normalize(key);
+        foreach (var item in ListTargets ?? [])
+        {
+            if (WorkstationProfileKeys.Normalize(item.Key) == targetNorm)
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+}
+
+public sealed record WorkstationListNavigationTarget(
+    string Key,
+    BBox? RoiWindow = null,
+    WindowPoint? FirstRowAnchor = null,
+    int? RowHeight = null,
+    WindowPoint? ActionClickPoint = null
 );
 
 public readonly record struct WindowPoint(int X, int Y);

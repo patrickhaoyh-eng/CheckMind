@@ -121,6 +121,7 @@ public sealed class TestlabTabClickPointCalibrator
             (BBox RoiWindow, string Sha256)? verify = null;
             var suspiciousSame = false;
             var signatureSettled = false;
+            var normalizedTab = NormalizeKey(tab);
             for (var clickTry = 0; clickTry < 3; clickTry++)
             {
                 win = locator.Find();
@@ -128,6 +129,24 @@ public sealed class TestlabTabClickPointCalibrator
                 await Task.Delay(30);
                 controller.ClickScreenPoint(win.Rect.Left + point.X, win.Rect.Top + point.Y);
                 await Task.Delay(220 + (clickTry * 120));
+
+                if (normalizedTab == NormalizeKey("Sine Setup"))
+                {
+                    var restoreSequence = ResolveSineSetupChannelSafetyRestoreSequence(profile);
+                    foreach (var restorePoint in restoreSequence)
+                    {
+                        controller.ClickWindowPoint(win.Hwnd, restorePoint);
+                        await Task.Delay(180);
+                    }
+
+                    var settleMs = Math.Clamp(GetIntEnv("CHECKMIND_SINE_SETUP_CHANNEL_SAFETY_RESTORE_SLEEP_MS", 360), 0, 2000);
+                    await Task.Delay(settleMs);
+                    TestlabDebugMarkers.WritePhase(
+                        "calib.sine_setup_channel_safety_restored",
+                        run.RunDirectory,
+                        $"tab={tab};sequence={FormatWindowPointSequence(restoreSequence)};sleepMs={settleMs}"
+                    );
+                }
 
                 verify = null;
                 windowBytes = null;
@@ -482,6 +501,26 @@ public sealed class TestlabTabClickPointCalibrator
             .ToArray();
         return new string(chars);
     }
+
+    private static WindowPoint[] ResolveSineSetupChannelSafetyRestoreSequence(WorkstationProfile profile)
+    {
+        var directSequence = profile.FindDialogAction("sine_setup_channel_safety_parameters")?.GetClickSequence();
+        if (directSequence is not null && directSequence.Length > 0)
+        {
+            return directSequence;
+        }
+
+        var defineSequence = profile.FindChildWindowProfile("define_notch_profiles")?.GetOpenClickSequence();
+        if (defineSequence is not null && defineSequence.Length > 0)
+        {
+            return defineSequence;
+        }
+
+        throw new InvalidOperationException("profile 缺少 `Channel safety parameters` 恢复点击点；请先执行相关标定。");
+    }
+
+    private static string FormatWindowPointSequence(IReadOnlyList<WindowPoint> sequence)
+        => string.Join("->", sequence.Select(static p => $"({p.X},{p.Y})"));
 
 
     private sealed class HotkeyListener : IDisposable

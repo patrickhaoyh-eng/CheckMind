@@ -12,6 +12,28 @@ namespace CheckMind.App;
 /// </summary>
 public partial class App : System.Windows.Application
 {
+    private static bool ShouldSuppressAutomationDialogs()
+    {
+        var noDialogs = (Environment.GetEnvironmentVariable("CHECKMIND_EMBEDDED_NO_DIALOGS") ?? "").Trim();
+        return string.Equals(noDialogs, "1", StringComparison.OrdinalIgnoreCase) ||
+               string.Equals(noDialogs, "true", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static void ShowAutomationMessage(string message, string caption, MessageBoxImage image = MessageBoxImage.Warning)
+    {
+        if (ShouldSuppressAutomationDialogs())
+        {
+            return;
+        }
+
+        System.Windows.MessageBox.Show(
+            message,
+            caption,
+            MessageBoxButton.OK,
+            image
+        );
+    }
+
     protected override void OnStartup(StartupEventArgs e)
     {
         var dpiBootstrap = TrySetPerMonitorV2DpiAwareness();
@@ -164,6 +186,82 @@ public partial class App : System.Windows.Application
                         return;
                     }
 
+                    var calibrateChildWindowEnv = (Environment.GetEnvironmentVariable("CHECKMIND_CALIBRATE_CHILD_WINDOW") ?? "").Trim();
+                    var calibrateChildWindowEnabled = string.Equals(calibrateChildWindowEnv, "1", StringComparison.OrdinalIgnoreCase) ||
+                                                      string.Equals(calibrateChildWindowEnv, "true", StringComparison.OrdinalIgnoreCase);
+                    if (calibrateChildWindowEnabled)
+                    {
+                        var childWindowKey = (Environment.GetEnvironmentVariable("CHECKMIND_CHILD_WINDOW_KEY") ?? "").Trim();
+                        TestlabDebugMarkers.WritePhase("app.before_calibrate_child_window", runDirectory, $"key={childWindowKey}");
+                        switch (childWindowKey.ToLowerInvariant())
+                        {
+                            case "define_notch_profiles":
+                                await new TestlabChildWindowCalibrator().CalibrateDefineNotchProfilesAsync(run);
+                                break;
+                            case "sine_setup_channel_safety_parameters":
+                                await new TestlabChildWindowCalibrator().CalibrateSineSetupChannelSafetyParametersAsync(run);
+                                break;
+                            case "notch_profile":
+                                await new TestlabChildWindowCalibrator().CalibrateNotchProfileAsync(run);
+                                break;
+                            case "notch_profile_paging_focus":
+                                await new TestlabChildWindowCalibrator().CalibrateNotchProfilePagingFocusAsync(run);
+                                break;
+                            case "notch_profile_paging_activation":
+                                await new TestlabChildWindowCalibrator().CalibrateNotchProfilePagingActivationAsync(run);
+                                break;
+                            default:
+                                throw new InvalidOperationException($"暂不支持的子窗口标定 key：{childWindowKey}");
+                        }
+
+                        TestlabDebugMarkers.WritePhase("app.after_calibrate_child_window", runDirectory, $"key={childWindowKey}");
+                        return;
+                    }
+
+                    var notchEntryProbeEnv = (Environment.GetEnvironmentVariable("CHECKMIND_RUN_NOTCH_ENTRY_PROBE") ?? "").Trim();
+                    var notchEntryProbeEnabled = string.Equals(notchEntryProbeEnv, "1", StringComparison.OrdinalIgnoreCase) ||
+                                                 string.Equals(notchEntryProbeEnv, "true", StringComparison.OrdinalIgnoreCase);
+                    if (notchEntryProbeEnabled)
+                    {
+                        TestlabDebugMarkers.WritePhase("app.before_notch_entry_probe", runDirectory);
+                        _ = await Task.Run(() => new NotchProfilesEntryProbe().Run(run));
+                        TestlabDebugMarkers.WritePhase("app.after_notch_entry_probe", runDirectory);
+                        return;
+                    }
+
+                    var notchTableScanProbeEnv = (Environment.GetEnvironmentVariable("CHECKMIND_RUN_NOTCH_TABLE_SCAN_PROBE") ?? "").Trim();
+                    var notchTableScanProbeEnabled = string.Equals(notchTableScanProbeEnv, "1", StringComparison.OrdinalIgnoreCase) ||
+                                                     string.Equals(notchTableScanProbeEnv, "true", StringComparison.OrdinalIgnoreCase);
+                    if (notchTableScanProbeEnabled)
+                    {
+                        TestlabDebugMarkers.WritePhase("app.before_notch_table_scan_probe", runDirectory);
+                        _ = await Task.Run(() => new NotchProfileTableScanProbe().Run(run));
+                        TestlabDebugMarkers.WritePhase("app.after_notch_table_scan_probe", runDirectory);
+                        return;
+                    }
+
+                    var notchManualPgdnProbeEnv = (Environment.GetEnvironmentVariable("CHECKMIND_RUN_NOTCH_MANUAL_PGDN_PROBE") ?? "").Trim();
+                    var notchManualPgdnProbeEnabled = string.Equals(notchManualPgdnProbeEnv, "1", StringComparison.OrdinalIgnoreCase) ||
+                                                      string.Equals(notchManualPgdnProbeEnv, "true", StringComparison.OrdinalIgnoreCase);
+                    if (notchManualPgdnProbeEnabled)
+                    {
+                        TestlabDebugMarkers.WritePhase("app.before_notch_manual_pgdn_probe", runDirectory);
+                        _ = new NotchProfileManualPgdnProbe().Run(run);
+                        TestlabDebugMarkers.WritePhase("app.after_notch_manual_pgdn_probe", runDirectory);
+                        return;
+                    }
+
+                    var notchKeyModeProbeEnv = (Environment.GetEnvironmentVariable("CHECKMIND_RUN_NOTCH_KEY_MODE_PROBE") ?? "").Trim();
+                    var notchKeyModeProbeEnabled = string.Equals(notchKeyModeProbeEnv, "1", StringComparison.OrdinalIgnoreCase) ||
+                                                   string.Equals(notchKeyModeProbeEnv, "true", StringComparison.OrdinalIgnoreCase);
+                    if (notchKeyModeProbeEnabled)
+                    {
+                        TestlabDebugMarkers.WritePhase("app.before_notch_key_mode_probe", runDirectory);
+                        _ = new NotchProfileKeyModeProbe().Run(run);
+                        TestlabDebugMarkers.WritePhase("app.after_notch_key_mode_probe", runDirectory);
+                        return;
+                    }
+
                     if (overlayEnabled)
                     {
                         TestlabDebugMarkers.WritePhase("app.before_overlay_start", runDirectory);
@@ -205,10 +303,9 @@ public partial class App : System.Windows.Application
                             catch (Exception ex)
                             {
                                 TestlabDebugMarkers.WritePhase("app.open_run_directory_failed", runDirectory, $"{ex.GetType().Name}:{ex.Message}");
-                                System.Windows.MessageBox.Show(
+                                ShowAutomationMessage(
                                     $"无法自动打开保存路径，请手动打开：\r\n{run.RunDirectory}",
                                     "CheckMind - 打开保存路径失败",
-                                    MessageBoxButton.OK,
                                     MessageBoxImage.Warning
                                 );
                             }
@@ -221,10 +318,9 @@ public partial class App : System.Windows.Application
                     TestlabDebugMarkers.WritePhase("app.window_state_exception", runDirectory, ex.Message);
                     var errorPath = Path.Combine(Path.GetTempPath(), "checkmind_testlab_error.txt");
                     File.WriteAllText(errorPath, ex.ToString());
-                    System.Windows.MessageBox.Show(
+                    ShowAutomationMessage(
                         ex.Message,
                         "CheckMind - Testlab 窗口状态异常",
-                        MessageBoxButton.OK,
                         MessageBoxImage.Warning
                     );
                 }
@@ -270,10 +366,9 @@ public partial class App : System.Windows.Application
                     {
                     }
 
-                    System.Windows.MessageBox.Show(
+                    ShowAutomationMessage(
                         message,
                         "CheckMind - 固定工位环境不合规",
-                        MessageBoxButton.OK,
                         MessageBoxImage.Warning
                     );
                 }
@@ -323,10 +418,9 @@ public partial class App : System.Windows.Application
                     {
                     }
 
-                    System.Windows.MessageBox.Show(
+                    ShowAutomationMessage(
                         message,
                         "CheckMind - 标定核验失败",
-                        MessageBoxButton.OK,
                         MessageBoxImage.Warning
                     );
                 }
@@ -377,10 +471,9 @@ public partial class App : System.Windows.Application
                     {
                     }
 
-                    System.Windows.MessageBox.Show(
+                    ShowAutomationMessage(
                         message,
                         "CheckMind - 页签固定点击点门禁失败",
-                        MessageBoxButton.OK,
                         MessageBoxImage.Warning
                     );
                 }

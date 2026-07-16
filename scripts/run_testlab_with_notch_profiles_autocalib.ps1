@@ -1,3 +1,7 @@
+param(
+    [string]$NotchProfileIndexes = "1"
+)
+
 $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -6,7 +10,7 @@ Add-Type -AssemblyName PresentationFramework
 
 $embeddedNoDialogs = (($env:CHECKMIND_EMBEDDED_NO_DIALOGS) + "").Trim()
 $embeddedNoDialogs = $embeddedNoDialogs -eq "1" -or $embeddedNoDialogs -eq "true"
-$finalRunMarkerPath = Join-Path $env:TEMP "checkmind_testlab_autocalib_last_run.txt"
+$finalRunMarkerPath = Join-Path $env:TEMP "checkmind_testlab_with_notch_profiles_autocalib_last_run.txt"
 
 function Decode-Utf8Base64([string]$value)
 {
@@ -77,7 +81,7 @@ function Wait-ForRunCompletion([string]$runDir)
 
     $signals = @(
         (Join-Path $runDir "results.json"),
-        (Join-Path $runDir "coverage.json"),
+        (Join-Path $runDir "testlab_run.json"),
         (Join-Path $runDir "testlab_phases.log")
     )
 
@@ -107,17 +111,18 @@ function Wait-ForRunCompletion([string]$runDir)
 $message = @(
     (Decode-Utf8Base64 "5Y2z5bCG5byA5aeL5Y+M5q2l6aqk6Ieq5Yqo5rWB56iL77ya"),
     (Decode-Utf8Base64 "MS4g5aSN55So546w5pyJIENsaWNrUG9pbnQg6YeN5qCH5a6a6aqM55yf562+5ZCN"),
-    (Decode-Utf8Base64 "Mi4g6L+Q6KGMIENoYW5uZWwgU2V0dXAgKyBTaW5lIFNldHVwIOWPjOmhteWIh+mhteS4jue/u+mhtea1i+ivlQ=="),
+    (Decode-Utf8Base64 "Mi4g6L+Q6KGMIENoYW5uZWwgU2V0dXAgKyBTaW5lIFNldHVwIOaKk+WPliArIE5vdGNoIFByb2ZpbGUg5q2j5byP6ZO+6Lev"),
     "",
-    (Decode-Utf8Base64 "5rWB56iL5byA5aeL5ZCO5Lya5o6l566h6byg5qCHL+mUruebmOOAgg=="),
-    (Decode-Utf8Base64 "54K55Ye756Gu5a6a5ZCO56uL5Y2z5byA5aeL77yM5Lit6YCU5LiN5YaN5by55byA5aeL56Gu6K6k5qGG44CC")
+    ((Decode-Utf8Base64 "Tm90Y2ggUHJvZmlsZSDluo/lj7c6IA==") + $NotchProfileIndexes),
+    "",
+    (Decode-Utf8Base64 "5rWB56iL5byA5aeL5ZCO5Lya5o6l566h6byg5qCHL+mUruebmOOAgg==")
 ) -join "`r`n"
 
 if (-not $embeddedNoDialogs)
 {
     $result = [System.Windows.MessageBox]::Show(
         $message,
-        (Decode-Utf8Base64 "Q2hlY2tNaW5kIC0g5byA5aeL6Ieq5Yqo6YeN5qCH5a6a5bm25rWL6K+V"),
+        "CheckMind - Notch Profile 自动抓取",
         [System.Windows.MessageBoxButton]::OKCancel,
         [System.Windows.MessageBoxImage]::Warning
     )
@@ -137,20 +142,24 @@ $env:CHECKMIND_EMBEDDED_NO_DIALOGS = "1"
 powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\calibrate_verify_signature_reuse.ps1")
 if ($LASTEXITCODE -ne 0)
 {
-    [System.Windows.MessageBox]::Show(
-        (Decode-Utf8Base64 "56ysIDEg5q2l5aSx6LSl77yM5bey5YGc5q2i77yM5pyq57un57ut5omn6KGM56ysIDIg5q2l44CC"),
-        (Decode-Utf8Base64 "Q2hlY2tNaW5kIC0g5byA5aeL6Ieq5Yqo6YeN5qCH5a6a5bm25rWL6K+V"),
-        [System.Windows.MessageBoxButton]::OK,
-        [System.Windows.MessageBoxImage]::Error
-    ) | Out-Null
+    if (-not $embeddedNoDialogs)
+    {
+        [System.Windows.MessageBox]::Show(
+            '第 1 步失败，未继续执行第 2 步。',
+            'CheckMind - Notch Profile 自动抓取',
+            [System.Windows.MessageBoxButton]::OK,
+            [System.Windows.MessageBoxImage]::Error
+        ) | Out-Null
+    }
     exit $LASTEXITCODE
 }
 
-Write-Host "Step 2/2: Run dual-tabs capture (PgUp/PgDn)"
+Write-Host "Step 2/2: Run Testlab with Notch Profiles"
 $env:CHECKMIND_CAPTURE_PROMPT = "0"
 $env:CHECKMIND_EMBEDDED_NO_DIALOGS = "1"
 $env:CHECKMIND_START_CONFIRM_PROMPT = "0"
-powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\run_testlab_dual_tabs_pgup_pgdn.ps1")
+$env:CHECKMIND_AUTO_RECALIBRATE_VERIFY_SIGNATURE = "0"
+powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\run_testlab_with_notch_profiles.ps1") -NotchProfileIndexes $NotchProfileIndexes
 if ($LASTEXITCODE -ne 0)
 {
     exit $LASTEXITCODE
@@ -168,7 +177,7 @@ if (![string]::IsNullOrWhiteSpace($lastRun) -and (Test-Path $lastRun))
     Set-Content -LiteralPath $finalRunMarkerPath -Value $lastRun -NoNewline
 }
 
-$evidenceDir = if (![string]::IsNullOrWhiteSpace($lastRun)) { Join-Path $lastRun "screenshots\\evidence" } else { "" }
+$evidenceDir = if (![string]::IsNullOrWhiteSpace($lastRun)) { Join-Path $lastRun "screenshots\evidence" } else { "" }
 $openTarget = if (![string]::IsNullOrWhiteSpace($evidenceDir) -and (Test-Path $evidenceDir)) { $evidenceDir } else { $lastRun }
 if (-not $embeddedNoDialogs -and -not [string]::IsNullOrWhiteSpace($openTarget) -and (Test-Path $openTarget))
 {
@@ -189,25 +198,23 @@ if (-not $embeddedNoDialogs -and -not [string]::IsNullOrWhiteSpace($openTarget) 
     }
 }
 
-$finishMessage = if ([string]::IsNullOrWhiteSpace($lastRun))
-{
-    Decode-Utf8Base64 "6Ieq5Yqo5rWB56iL5bey5a6M5oiQ44CC"
-}
-else
-{
-    @(
-        Decode-Utf8Base64 "6Ieq5Yqo5rWB56iL5bey5a6M5oiQ44CC"
-        "last_run=$lastRun"
-        ""
-        Decode-Utf8Base64 "54K55Ye75piv56uL5Y2z5omT5byA5L+d5a2Y6Lev5b6E77yf"
-    ) -join "`r`n`r`n"
-}
-
 if (-not $embeddedNoDialogs)
 {
+    $finishMessage = if ([string]::IsNullOrWhiteSpace($lastRun))
+    {
+        '自动流程已完成。'
+    }
+    else
+    {
+        @(
+            '自动流程已完成。',
+            "last_run=$lastRun"
+        ) -join "`r`n`r`n"
+    }
+
     [System.Windows.MessageBox]::Show(
         $finishMessage,
-        (Decode-Utf8Base64 "Q2hlY2tNaW5kIC0g6Ieq5Yqo5rWB56iL5a6M5oiQ"),
+        'CheckMind - Notch Profile 自动抓取完成',
         [System.Windows.MessageBoxButton]::OK,
         [System.Windows.MessageBoxImage]::Information
     ) | Out-Null

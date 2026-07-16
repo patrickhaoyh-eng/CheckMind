@@ -62,6 +62,12 @@ internal static class Win32Native
     internal static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, UIntPtr dwExtraInfo);
 
     [DllImport("user32.dll", SetLastError = true)]
+    internal static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    internal static extern bool PostMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr MonitorFromPoint(POINT pt, uint dwFlags);
 
     [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
@@ -94,6 +100,8 @@ internal static class Win32Native
     );
 
     internal const int SW_MAXIMIZE = 3;
+    internal const uint INPUT_MOUSE = 0;
+    internal const uint INPUT_KEYBOARD = 1;
     internal const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
     internal const uint MOUSEEVENTF_LEFTUP = 0x0004;
     internal const uint MOUSEEVENTF_WHEEL = 0x0800;
@@ -102,11 +110,17 @@ internal static class Win32Native
     internal const uint SWP_NOACTIVATE = 0x0010;
     internal const uint SWP_NOOWNERZORDER = 0x0200;
     internal const uint KEYEVENTF_KEYUP = 0x0002;
+    internal const byte VK_MENU = 0x12;
     internal const byte VK_PRIOR = 0x21;
     internal const byte VK_NEXT = 0x22;
+    internal const byte VK_F4 = 0x73;
+    internal const byte VK_SPACE = 0x20;
+    internal const byte VK_X = 0x58;
     internal const byte VK_F8 = 0x77;
     internal const uint MONITORINFOF_PRIMARY = 0x00000001;
     internal const int WM_HOTKEY = 0x0312;
+    internal const uint WM_KEYDOWN = 0x0100;
+    internal const uint WM_KEYUP = 0x0101;
     internal const uint MOD_NOREPEAT = 0x4000;
     internal static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new IntPtr(-4);
 
@@ -124,6 +138,44 @@ internal static class Win32Native
     {
         public int X;
         public int Y;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct INPUT
+    {
+        public uint type;
+        public InputUnion U;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    internal struct InputUnion
+    {
+        [FieldOffset(0)]
+        public MOUSEINPUT mi;
+
+        [FieldOffset(0)]
+        public KEYBDINPUT ki;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public IntPtr dwExtraInfo;
     }
 
     [StructLayout(LayoutKind.Sequential)]

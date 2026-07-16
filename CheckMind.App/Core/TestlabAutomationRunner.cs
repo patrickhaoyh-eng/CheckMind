@@ -10,6 +10,12 @@ namespace CheckMind.App.Core;
 
 public sealed class TestlabAutomationRunner
 {
+    private sealed record ProfileSignatureProbeResult(
+        bool Verified,
+        string Mode,
+        byte[] WindowBytes
+    );
+
     public TestlabRunResult Run(RunContext run, ICaptureOverlay? overlay = null)
     {
         TestlabDebugMarkers.WritePhase("runner.enter", run.RunDirectory);
@@ -104,8 +110,9 @@ public sealed class TestlabAutomationRunner
             }
             TestlabDebugMarkers.WritePhase("runner.after_switch_tabs", run.RunDirectory, $"count={switches.Count}");
 
-            var result = new TestlabRunResult(beforePath, afterPath, switches);
-            WriteCoverage(run, GetAllTableScans(switches));
+            var notchProfileScans = RunNotchProfilesIfRequested(run, controller, capturer, screenshots, overlay);
+            var result = new TestlabRunResult(beforePath, afterPath, switches, notchProfileScans);
+            WriteCoverage(run, GetAllTableScans(switches, notchProfileScans));
             TestlabDebugMarkers.WritePhase("runner.before_write_run_result", run.RunDirectory);
             WriteRunResult(run, result);
             TestlabDebugMarkers.WritePhase("runner.after_write_run_result", run.RunDirectory);
@@ -141,6 +148,102 @@ public sealed class TestlabAutomationRunner
     {
         var raw = (Environment.GetEnvironmentVariable(key) ?? "").Trim();
         return int.TryParse(raw, out var v) ? v : defaultValue;
+    }
+
+    private static ProfileSignatureProbeResult ProbeStableProfileSignature(
+        RunContext run,
+        string tabName,
+        TestlabWindowInfo win,
+        ScreenCapture capturer,
+        ICaptureOverlay? overlay,
+        ScreenshotStore screenshots,
+        int tabIndex,
+        int xAttempt,
+        int yAttempt,
+        int clickTry,
+        BBox verifyRoiWindow,
+        string verifySha256,
+        byte[] initialWindowBytes
+    )
+    {
+        var stableConsecutive = Math.Clamp(GetIntEnv("CHECKMIND_PROFILE_SIGNATURE_VERIFY_STABLE_CONSECUTIVE", 2), 1, 4);
+        var sampleCount = Math.Clamp(GetIntEnv("CHECKMIND_PROFILE_SIGNATURE_VERIFY_SAMPLE_COUNT", 4), stableConsecutive, 8);
+        var sampleSleepMs = Math.Clamp(GetIntEnv("CHECKMIND_PROFILE_SIGNATURE_VERIFY_SAMPLE_SLEEP_MS", 80), 0, 500);
+
+        string? lastSampleSha = null;
+        var stableRun = 0;
+        string? settledSha = null;
+        byte[] settledSigBytes = Array.Empty<byte>();
+        byte[] currentWindowBytes = initialWindowBytes;
+        var sampled = 0;
+
+        for (var sampleIndex = 0; sampleIndex < sampleCount; sampleIndex++)
+        {
+            if (sampleIndex > 0)
+            {
+                if (sampleSleepMs > 0)
+                {
+                    Thread.Sleep(sampleSleepMs);
+                }
+
+                currentWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
+            }
+
+            var sigBytes = ImageCropper.TryCropToPngBytes(currentWindowBytes, verifyRoiWindow);
+            if (sigBytes is null)
+            {
+                stableRun = 0;
+                continue;
+            }
+
+            sampled++;
+            var actualSha = ComputeSha256Hex(sigBytes);
+            if (string.Equals(lastSampleSha, actualSha, StringComparison.OrdinalIgnoreCase))
+            {
+                stableRun++;
+            }
+            else
+            {
+                stableRun = 1;
+            }
+
+            lastSampleSha = actualSha;
+            if (stableRun >= stableConsecutive)
+            {
+                settledSha = actualSha;
+                settledSigBytes = sigBytes;
+                break;
+            }
+        }
+
+        if (string.IsNullOrWhiteSpace(settledSha))
+        {
+            TestlabDebugMarkers.WritePhase(
+                "runner.tab_switch_profile_signature_unstable",
+                run.RunDirectory,
+                $"tab={tabName};xAttempt={xAttempt};yAttempt={yAttempt};clickTry={clickTry};sampled={sampled};stableConsecutive={stableConsecutive};sampleCount={sampleCount};sampleSleepMs={sampleSleepMs};roi=({verifyRoiWindow.X},{verifyRoiWindow.Y},{verifyRoiWindow.Width},{verifyRoiWindow.Height})"
+            );
+            return new ProfileSignatureProbeResult(false, "profile_signature_unstable", currentWindowBytes);
+        }
+
+        if (string.Equals(settledSha, verifySha256, StringComparison.OrdinalIgnoreCase))
+        {
+            TestlabDebugMarkers.WritePhase(
+                "runner.tab_switch_verified_by_profile_signature",
+                run.RunDirectory,
+                $"tab={tabName};xAttempt={xAttempt};yAttempt={yAttempt};clickTry={clickTry};sampled={sampled};stableConsecutive={stableConsecutive};sampleSleepMs={sampleSleepMs}"
+            );
+            return new ProfileSignatureProbeResult(true, "profile_signature", currentWindowBytes);
+        }
+
+        var sigShotId = $"testlab_tabs_{tabIndex:00}_profile_signature_{Normalize(tabName)}_{xAttempt}_{yAttempt}_{clickTry}";
+        var sigPath = screenshots.SaveDebugPng(run, sigShotId, settledSigBytes);
+        TestlabDebugMarkers.WritePhase(
+            "runner.tab_switch_profile_signature_mismatch",
+            run.RunDirectory,
+            $"tab={tabName};xAttempt={xAttempt};yAttempt={yAttempt};clickTry={clickTry};sampled={sampled};stableConsecutive={stableConsecutive};sampleSleepMs={sampleSleepMs};roi=({verifyRoiWindow.X},{verifyRoiWindow.Y},{verifyRoiWindow.Width},{verifyRoiWindow.Height});actual={settledSha};expected={verifySha256};path={sigPath}"
+        );
+        return new ProfileSignatureProbeResult(false, "profile_signature_mismatch", currentWindowBytes);
     }
 
     private static IReadOnlyList<TestlabTabSwitchResult> SwitchTabsIfRequested(
@@ -214,6 +317,9 @@ public sealed class TestlabAutomationRunner
             {
                 continue;
             }
+
+            var normalizedTarget = Normalize(target);
+            var sineSetupRestoredBeforeVerify = false;
 
             var shotId0 = $"testlab_tabs_{i:00}_0_before";
             var shot0Bytes = i == 0
@@ -586,9 +692,10 @@ public sealed class TestlabAutomationRunner
 
                         controller.ClickScreenPoint(usedX, usedY);
                         var isFastFixedClick = clickSource == "fixed" && fastSwitch;
-                        var normalizedTarget = Normalize(target);
                         var postClickProbeSleepMs = isFastFixedClick
-                            ? (normalizedTarget == Normalize("Sine Setup") ? 80 : 40)
+                            ? (normalizedTarget == Normalize("Sine Setup")
+                                ? GetIntEnv("CHECKMIND_TAB_SWITCH_FAST_FIXED_SINE_POST_CLICK_PROBE_SLEEP_MS", 80)
+                                : GetIntEnv("CHECKMIND_TAB_SWITCH_FAST_FIXED_POST_CLICK_PROBE_SLEEP_MS", 40))
                             : 120;
                         Thread.Sleep(postClickProbeSleepMs);
 
@@ -611,20 +718,41 @@ public sealed class TestlabAutomationRunner
                         }
 
                         var preCaptureSleepMs = isFastFixedClick
-                            ? (normalizedTarget == Normalize("Sine Setup") ? 220 : 120)
+                            ? (normalizedTarget == Normalize("Sine Setup")
+                                ? GetIntEnv("CHECKMIND_TAB_SWITCH_FAST_FIXED_SINE_PRE_CAPTURE_SLEEP_MS", 320)
+                                : GetIntEnv("CHECKMIND_TAB_SWITCH_FAST_FIXED_PRE_CAPTURE_SLEEP_MS", 120))
                             : 580;
                         Thread.Sleep(preCaptureSleepMs);
                         clickAttempts++;
                         var capSw = Stopwatch.StartNew();
-                        shot1Bytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
+                        if (isFastFixedClick && normalizedTarget == Normalize("Sine Setup"))
+                        {
+                            (shot1Bytes, _) = RestoreSineSetupChannelSafetyParameters(
+                                run,
+                                controller,
+                                capturer,
+                                screenshots,
+                                overlay,
+                                win,
+                                target,
+                                i,
+                                evidencePrefix: "testlab_tabs_preverify"
+                            );
+                            sineSetupRestoredBeforeVerify = true;
+                        }
+                        else
+                        {
+                            shot1Bytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
+                        }
                         capSw.Stop();
                         captureWindowMs += capSw.ElapsedMilliseconds;
 
                         if (isFastFixedClick &&
                             normalizedTarget == Normalize("Sine Setup") &&
+                            !sineSetupRestoredBeforeVerify &&
                             !string.IsNullOrWhiteSpace(verifySha256))
                         {
-                            Thread.Sleep(90);
+                            Thread.Sleep(GetIntEnv("CHECKMIND_TAB_SWITCH_FAST_FIXED_SINE_RECAPTURE_SLEEP_MS", 120));
                             capSw = Stopwatch.StartNew();
                             shot1Bytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
                             capSw.Stop();
@@ -643,34 +771,62 @@ public sealed class TestlabAutomationRunner
                         );
 
                         var verSw = Stopwatch.StartNew();
-                        var outcome = VerifyPageSwitched(
-                            run,
-                            target,
-                            shot0Bytes,
-                            shot1Bytes,
-                            tabsRoiWindow,
-                            verifyRoiWindow,
-                            verifySha256,
-                            clickSource == "fixed" && fastSwitch ? null : GetOcrRunner(),
-                            screenshots,
-                            i,
-                            xAttempt,
-                            yAttempt,
-                            clickTry,
-                            localClickX,
-                            localClickY
-                        );
+                        var outcome = (Verified: false, Mode: "unknown");
+                        if (clickSource == "fixed" && fastSwitch &&
+                            verifyRoiWindow is not null &&
+                            !string.IsNullOrWhiteSpace(verifySha256))
+                        {
+                            var probe = ProbeStableProfileSignature(
+                                run,
+                                target,
+                                win,
+                                capturer,
+                                overlay,
+                                screenshots,
+                                i,
+                                xAttempt,
+                                yAttempt,
+                                clickTry,
+                                verifyRoiWindow.Value,
+                                verifySha256,
+                                shot1Bytes
+                            );
+                            shot1Bytes = probe.WindowBytes;
+                            outcome = (probe.Verified, probe.Mode);
+                        }
+                        else
+                        {
+                            outcome = VerifyPageSwitched(
+                                run,
+                                target,
+                                shot0Bytes,
+                                shot1Bytes,
+                                tabsRoiWindow,
+                                verifyRoiWindow,
+                                verifySha256,
+                                clickSource == "fixed" && fastSwitch ? null : GetOcrRunner(),
+                                screenshots,
+                                i,
+                                xAttempt,
+                                yAttempt,
+                                clickTry,
+                                localClickX,
+                                localClickY
+                            );
+                        }
                         verSw.Stop();
                         verifyMs += verSw.ElapsedMilliseconds;
                         verified = outcome.Verified;
                         verifyMode = outcome.Mode;
 
                         if (!verified && clickSource == "fixed" && fastSwitch &&
-                            string.Equals(verifyMode, "profile_signature_mismatch", StringComparison.OrdinalIgnoreCase) &&
+                            (string.Equals(verifyMode, "profile_signature_mismatch", StringComparison.OrdinalIgnoreCase) ||
+                             string.Equals(verifyMode, "profile_signature_unstable", StringComparison.OrdinalIgnoreCase)) &&
+                            verifyRoiWindow is not null &&
                             !string.IsNullOrWhiteSpace(verifySha256))
                         {
                             var retryCount = Math.Clamp(GetIntEnv("CHECKMIND_PROFILE_SIGNATURE_VERIFY_RETRY", 2), 0, 6);
-                            var retrySleepMs = Math.Clamp(GetIntEnv("CHECKMIND_PROFILE_SIGNATURE_VERIFY_RETRY_SLEEP_MS", 60), 0, 500);
+                            var retrySleepMs = Math.Clamp(GetIntEnv("CHECKMIND_PROFILE_SIGNATURE_VERIFY_RETRY_SLEEP_MS", 100), 0, 800);
                             for (var verifyRetry = 0; verifyRetry < retryCount; verifyRetry++)
                             {
                                 Thread.Sleep(retrySleepMs);
@@ -680,27 +836,26 @@ public sealed class TestlabAutomationRunner
                                 captureWindowMs += capSw.ElapsedMilliseconds;
 
                                 verSw = Stopwatch.StartNew();
-                                outcome = VerifyPageSwitched(
+                                var probe = ProbeStableProfileSignature(
                                     run,
                                     target,
-                                    shot0Bytes,
-                                    shot1Bytes,
-                                    tabsRoiWindow,
-                                    verifyRoiWindow,
-                                    verifySha256,
-                                    null,
+                                    win,
+                                    capturer,
+                                    overlay,
                                     screenshots,
                                     i,
                                     xAttempt,
                                     yAttempt,
                                     clickTry,
-                                    localClickX,
-                                    localClickY
+                                    verifyRoiWindow.Value,
+                                    verifySha256,
+                                    shot1Bytes
                                 );
                                 verSw.Stop();
                                 verifyMs += verSw.ElapsedMilliseconds;
-                                verified = outcome.Verified;
-                                verifyMode = outcome.Mode;
+                                shot1Bytes = probe.WindowBytes;
+                                verified = probe.Verified;
+                                verifyMode = probe.Mode;
                                 if (verified)
                                 {
                                     break;
@@ -808,6 +963,21 @@ public sealed class TestlabAutomationRunner
                 continue;
             }
 
+            if (normalizedTarget == Normalize("Sine Setup") && !sineSetupRestoredBeforeVerify)
+            {
+                (shot1Bytes, shot1Path) = RestoreSineSetupChannelSafetyParameters(
+                    run,
+                    controller,
+                    capturer,
+                    screenshots,
+                    overlay,
+                    win,
+                    target,
+                    i,
+                    evidencePrefix: "testlab_tabs"
+                );
+            }
+
             var tableEntries = CaptureTableEntriesIfNeeded(run, target, shot1Bytes, capturer, screenshots, i, win, tabsRoiWindow, overlay);
             var tableScans = ScanTablesVerticallyIfNeeded(run, target, controller, capturer, screenshots, win, tableEntries, overlay);
             var regions = fixedProfile is not null && fastSwitch
@@ -872,8 +1042,13 @@ public sealed class TestlabAutomationRunner
             defaultRoiWindow = new BBox(contentBounds.X, top, contentBounds.Width, Math.Min(height, Math.Max(1, h - top)));
         }
 
-        var entryProfileRoi = pageProfile?.FindCaptureTarget("table_entry")?.RoiWindow;
-        var scanProfileRoi = pageProfile?.FindCaptureTarget("table_scan")?.RoiWindow ?? pageProfile?.CaptureRoiWindow;
+        var entryCaptureTarget = pageProfile?.FindCaptureTarget("table_entry");
+        var scanCaptureTarget = pageProfile?.FindCaptureTarget("table_scan");
+        var entryProfileRoi = entryCaptureTarget?.RoiWindow;
+        var scanProfileRoi = scanCaptureTarget?.RoiWindow ?? pageProfile?.CaptureRoiWindow;
+        var pagingFocusPointWindow = scanCaptureTarget?.PagingFocusPointWindow ?? pageProfile?.ScrollAnchor;
+        var pagingActivationPointWindow = scanCaptureTarget?.PagingActivationPointWindow;
+        var pagingPreparationMode = scanCaptureTarget?.PagingPreparationMode;
         var entryRoiWindow = entryProfileRoi ?? defaultRoiWindow;
         var scanRoiWindow = scanProfileRoi ?? entryRoiWindow;
         var entryRoiScreen = entryProfileRoi is not null
@@ -891,11 +1066,20 @@ public sealed class TestlabAutomationRunner
         var tablePath = screenshots.SaveEvidencePng(run, $"testlab_tabs_{tabIndex:00}_{tableKey}_table_entry", tableBytes);
         return new[]
         {
-            new TestlabTableEntryResult(tabName, tableName, tablePath, scanRoiWindow, scanRoiScreen)
+            new TestlabTableEntryResult(
+                tabName,
+                tableName,
+                tablePath,
+                scanRoiWindow,
+                scanRoiScreen,
+                pagingFocusPointWindow,
+                pagingActivationPointWindow,
+                pagingPreparationMode
+            )
         };
     }
 
-    private static IReadOnlyList<TestlabTableScanResult>? ScanTablesVerticallyIfNeeded(
+    internal static IReadOnlyList<TestlabTableScanResult>? ScanTablesVerticallyIfNeeded(
         RunContext run,
         string tabName,
         WindowController controller,
@@ -906,12 +1090,6 @@ public sealed class TestlabAutomationRunner
         ICaptureOverlay? overlay
     )
     {
-        var normalizedTab = Normalize(tabName);
-        if (normalizedTab != Normalize("Sine Setup") && normalizedTab != Normalize("Channel Setup"))
-        {
-            return null;
-        }
-
         if (entries is null || entries.Count == 0)
         {
             return null;
@@ -935,168 +1113,286 @@ public sealed class TestlabAutomationRunner
         var results = new List<TestlabTableScanResult>();
         foreach (var entry in entries)
         {
-            var roi = entry.TableRoiScreen;
-            var interactionRoi = GetTableInteractionRoi(entry);
-            var roiWindow = entry.TableRoiWindow;
-            var interactionRoiWindow = GetTableInteractionRoiWindow(entry);
-            var focusX = interactionRoi.X + Math.Clamp((int)Math.Round(interactionRoi.Width * 0.35), 60, Math.Max(60, interactionRoi.Width - 24));
-            var focusY = interactionRoi.Y + (interactionRoi.Height / 2);
-            var scrollbarRoi = new BBox(
-                interactionRoi.X + Math.Max(0, interactionRoi.Width - 18),
-                interactionRoi.Y,
-                Math.Min(18, interactionRoi.Width),
-                interactionRoi.Height
-            );
-            var scrollbarRoiWindow = new BBox(
-                interactionRoiWindow.X + Math.Max(0, interactionRoiWindow.Width - 18),
-                interactionRoiWindow.Y,
-                Math.Min(18, interactionRoiWindow.Width),
-                interactionRoiWindow.Height
-            );
-            TestlabDebugMarkers.WritePhase(
-                "runner.table_scroll_target",
-                run.RunDirectory,
-                $"table={entry.TableName};roi=({roi.X},{roi.Y},{roi.Width},{roi.Height});roiWindow=({roiWindow.X},{roiWindow.Y},{roiWindow.Width},{roiWindow.Height});interaction=({interactionRoi.X},{interactionRoi.Y},{interactionRoi.Width},{interactionRoi.Height});interactionWindow=({interactionRoiWindow.X},{interactionRoiWindow.Y},{interactionRoiWindow.Width},{interactionRoiWindow.Height});focus=({focusX},{focusY});scrollbar=({scrollbarRoi.X},{scrollbarRoi.Y},{scrollbarRoi.Width},{scrollbarRoi.Height})"
-            );
-            controller.ClickScreenPoint(focusX, focusY);
-            Thread.Sleep(80);
-            controller.ClickScreenPoint(focusX, focusY);
-            Thread.Sleep(80);
-            var topSerialVerifyTarget = fixedProfile?
-                .FindPageProfile(entry.TabName)?
-                .FindVerifyTarget("top_serial");
-            var topSerialVerifyRoiWindow = topSerialVerifyTarget?.RoiWindow;
-            var topSerialVerifySha256 = topSerialVerifyTarget?.Sha256
-                ?? fixedProfile?.FindPageProfile(entry.TabName)?.TopSerialVerifySha256;
-
-            var resetTopStable = ResetTableToTopBeforeScan(
-                run,
-                controller,
-                overlay,
-                capturer,
-                screenshots,
-                entry,
-                win,
-                roi,
-                roiWindow,
-                serialX: 0,
-                serialWidthHint: Math.Clamp((int)Math.Round(roi.Width * 0.12), 80, 280),
-                scrollbarRoi,
-                scrollbarRoiWindow,
-                focusX,
-                focusY,
-                pauseMs,
-                topSerialVerifyRoiWindow,
-                topSerialVerifySha256
-            );
-            if (!resetTopStable)
-            {
-                TestlabDebugMarkers.WritePhase(
-                    "runner.table_scan_blocked_unstable_top",
-                    run.RunDirectory,
-                    $"table={entry.TableName};tab={entry.TabName};reason=reset_top_not_stable"
-                );
-                results.Add(new TestlabTableScanResult(entry.TabName, entry.TableName, entry.TableRoiWindow, entry.TableRoiScreen, Array.Empty<TestlabTableScanChunkResult>(), 0, null));
-                continue;
-            }
-
-            var serialXRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_SERIAL_X");
-            var serialX = int.TryParse(serialXRaw, out var sx) ? sx : 0;
-            serialX = Math.Clamp(serialX, 0, Math.Max(0, roi.Width - 1));
-
-            var serialWidthRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_SERIAL_WIDTH");
-            var serialWidth = int.TryParse(serialWidthRaw, out var sw)
-                ? sw
-                : Math.Clamp((int)Math.Round(roi.Width * 0.12), 80, 280);
-            serialWidth = Math.Clamp(serialWidth, 20, Math.Max(20, roi.Width - serialX));
-
-            var serialRoi = new BBox(roi.X + serialX, roi.Y, serialWidth, roi.Height);
-            var serialRoiWindow = new BBox(roiWindow.X + serialX, roiWindow.Y, serialWidth, roiWindow.Height);
-
-            var chunks = new List<TestlabTableScanChunkResult>();
-            string? lastStateHash = null;
-            var scrollEvents = new List<TestlabTableScrollEvent>();
-
-            (TestlabTableScanChunkResult Chunk, string ScrollbarHash) CaptureChunk(int chunkIndex)
-            {
-                controller.ClickScreenPoint(focusX, focusY);
-                Thread.Sleep(60);
-                overlay?.SetRect(roi);
-                Thread.Sleep(80);
-                var windowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
-                _ = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(entry.TableName)}_window_v_{chunkIndex:00}", windowBytes);
-                var bytes = ImageCropper.TryCropToPngBytes(windowBytes, roiWindow) ?? windowBytes;
-                var path = screenshots.SaveEvidencePng(run, $"testlab_table_{Normalize(entry.TableName)}_v_{chunkIndex:00}", bytes);
-                var frameHash = ComputeSha256Hex(bytes);
-                var serialBytes = ImageCropper.TryCropToPngBytes(windowBytes, serialRoiWindow) ?? bytes;
-                var serialPath = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(entry.TableName)}_serial_v_{chunkIndex:00}", serialBytes);
-                var serialHash = ComputeSha256Hex(serialBytes);
-                var scrollbarBytes = ImageCropper.TryCropToPngBytes(windowBytes, scrollbarRoiWindow) ?? bytes;
-                var scrollbarHash = ComputeSha256Hex(scrollbarBytes);
-                var chunk = new TestlabTableScanChunkResult(chunkIndex, path, roi, frameHash, serialRoi, serialPath, serialHash);
-                chunks.Add(chunk);
-                return (chunk, scrollbarHash);
-            }
-
-            var (currentChunk, currentScrollbarHash) = CaptureChunk(0);
-            lastStateHash = $"{currentChunk.SerialSha256}:{currentScrollbarHash}";
-
-            for (var step = 0; step < Math.Max(0, maxSteps - 1); step++)
-            {
-                var scroll = TryScrollToNextChunk(
+            results.Add(
+                ScanSingleTableWithDeterministicPaging(
                     run,
                     controller,
                     overlay,
                     capturer,
                     screenshots,
-                    entry.TableName,
                     win,
-                    roi,
-                    roiWindow,
-                    serialRoi,
-                    serialRoiWindow,
-                    scrollbarRoi,
-                    scrollbarRoiWindow,
-                    focusX,
-                    focusY,
-                    currentChunk.SerialSha256,
-                    currentScrollbarHash,
-                    step
-                );
-                scrollEvents.Add(scroll);
-                if (!scroll.Changed)
-                {
-                    break;
-                }
-
-                var (nextChunk, nextScrollbarHash) = CaptureChunk(chunks.Count);
-                var nextStateHash = $"{nextChunk.SerialSha256}:{nextScrollbarHash}";
-                if (string.Equals(lastStateHash, nextStateHash, StringComparison.OrdinalIgnoreCase))
-                {
-                    break;
-                }
-
-                currentChunk = nextChunk;
-                currentScrollbarHash = nextScrollbarHash;
-                lastStateHash = nextStateHash;
-            }
-
-            if (scrollEvents.Count > 0)
-            {
-                var scrollPath = Path.Combine(run.RunDirectory, $"table_scroll_events_{Normalize(entry.TableName)}.json");
-                var scrollReport = new TestlabTableScrollEventsReport(entry.TabName, entry.TableName, roi, chunks[0].SerialRoiScreen, scrollbarRoi, scrollEvents);
-                File.WriteAllText(scrollPath, scrollReport.ToJson(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
-            }
-
-            var uniqueChunks = GetUniqueChunksBySerial(chunks);
-            var stitchedPath = uniqueChunks.Count > 0
-                ? TryWriteStitchedTableEvidence(run, screenshots, entry.TableName, uniqueChunks)
-                : null;
-            WriteTableEvidenceReport(run, entry.TabName, entry.TableName, chunks, uniqueChunks, scrollEvents, stitchedPath);
-            results.Add(new TestlabTableScanResult(entry.TabName, entry.TableName, entry.TableRoiWindow, entry.TableRoiScreen, chunks, uniqueChunks.Count, stitchedPath));
+                    entry,
+                    fixedProfile,
+                    maxSteps,
+                    pauseMs
+                )
+            );
         }
 
         return results;
+    }
+
+    internal static TestlabTableScanResult ScanSingleTableWithDeterministicPaging(
+        RunContext run,
+        WindowController controller,
+        ICaptureOverlay? overlay,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        TestlabWindowInfo win,
+        TestlabTableEntryResult entry,
+        WorkstationProfile? fixedProfile,
+        int maxSteps,
+        int pauseMs
+    )
+    {
+        var context = BuildTableScanContext(run, entry, win, fixedProfile);
+        PrimeTableScanInteraction(controller, context);
+
+        var resetTopStable = ResetTableToTopBeforeScan(
+            run,
+            controller,
+            overlay,
+            capturer,
+            screenshots,
+            context,
+            pauseMs
+        );
+        if (!resetTopStable)
+        {
+            TestlabDebugMarkers.WritePhase(
+                "runner.table_scan_blocked_unstable_top",
+                run.RunDirectory,
+                $"table={entry.TableName};tab={entry.TabName};reason=reset_top_not_stable"
+            );
+            return new TestlabTableScanResult(entry.TabName, entry.TableName, entry.TableRoiWindow, entry.TableRoiScreen, Array.Empty<TestlabTableScanChunkResult>(), 0, null);
+        }
+
+        var (chunks, scrollEvents) = CaptureTableChunksWithDeterministicPaging(
+            run,
+            controller,
+            overlay,
+            capturer,
+            screenshots,
+            context,
+            maxSteps
+        );
+
+        if (scrollEvents.Count > 0)
+        {
+            var scrollPath = Path.Combine(run.RunDirectory, $"table_scroll_events_{Normalize(entry.TableName)}.json");
+            var scrollReport = new TestlabTableScrollEventsReport(entry.TabName, entry.TableName, context.TableRoiScreen, context.SerialRoiScreen, context.ScrollbarRoiScreen, scrollEvents);
+            File.WriteAllText(scrollPath, scrollReport.ToJson(), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        }
+
+        var uniqueChunks = GetUniqueChunksBySerial(chunks);
+        var stitchedPath = uniqueChunks.Count > 0
+            ? TryWriteStitchedTableEvidence(run, screenshots, entry.TableName, uniqueChunks)
+            : null;
+        WriteTableEvidenceReport(run, entry.TabName, entry.TableName, chunks, uniqueChunks, scrollEvents, stitchedPath);
+        return new TestlabTableScanResult(entry.TabName, entry.TableName, entry.TableRoiWindow, entry.TableRoiScreen, chunks, uniqueChunks.Count, stitchedPath);
+    }
+
+    private static TestlabTableScanContext BuildTableScanContext(
+        RunContext run,
+        TestlabTableEntryResult entry,
+        TestlabWindowInfo win,
+        WorkstationProfile? fixedProfile
+    )
+    {
+        var tableRoiScreen = entry.TableRoiScreen;
+        var interactionRoiScreen = GetTableInteractionRoi(entry);
+        var tableRoiWindow = entry.TableRoiWindow;
+        var interactionRoiWindow = GetTableInteractionRoiWindow(entry);
+        var effectiveFocusPointWindow = entry.PagingFocusPointWindow;
+        var focusX = effectiveFocusPointWindow is WindowPoint configuredFocus
+            ? win.Rect.Left + Math.Clamp(configuredFocus.X, 0, Math.Max(0, win.Rect.Width - 1))
+            : interactionRoiScreen.X + Math.Clamp((int)Math.Round(interactionRoiScreen.Width * 0.35), 60, Math.Max(60, interactionRoiScreen.Width - 24));
+        var focusY = effectiveFocusPointWindow is WindowPoint configuredFocusY
+            ? win.Rect.Top + Math.Clamp(configuredFocusY.Y, 0, Math.Max(0, win.Rect.Height - 1))
+            : interactionRoiScreen.Y + (interactionRoiScreen.Height / 2);
+        var activationX = entry.PagingActivationPointWindow is WindowPoint configuredActivation
+            ? win.Rect.Left + Math.Clamp(configuredActivation.X, 0, Math.Max(0, win.Rect.Width - 1))
+            : focusX;
+        var activationY = entry.PagingActivationPointWindow is WindowPoint configuredActivationY
+            ? win.Rect.Top + Math.Clamp(configuredActivationY.Y, 0, Math.Max(0, win.Rect.Height - 1))
+            : focusY;
+        var scrollbarRoiScreen = new BBox(
+            interactionRoiScreen.X + Math.Max(0, interactionRoiScreen.Width - 18),
+            interactionRoiScreen.Y,
+            Math.Min(18, interactionRoiScreen.Width),
+            interactionRoiScreen.Height
+        );
+        var scrollbarRoiWindow = new BBox(
+            interactionRoiWindow.X + Math.Max(0, interactionRoiWindow.Width - 18),
+            interactionRoiWindow.Y,
+            Math.Min(18, interactionRoiWindow.Width),
+            interactionRoiWindow.Height
+        );
+        var topSerialVerifyTarget = fixedProfile?
+            .FindPageProfile(entry.TabName)?
+            .FindVerifyTarget("top_serial");
+        var topSerialVerifyRoiWindow = topSerialVerifyTarget?.RoiWindow;
+        var topSerialVerifySha256 = topSerialVerifyTarget?.Sha256
+            ?? fixedProfile?.FindPageProfile(entry.TabName)?.TopSerialVerifySha256;
+
+        var serialXRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_SERIAL_X");
+        var serialX = int.TryParse(serialXRaw, out var sx) ? sx : 0;
+        serialX = Math.Clamp(serialX, 0, Math.Max(0, tableRoiScreen.Width - 1));
+
+        var serialWidthRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_SERIAL_WIDTH");
+        var serialWidth = int.TryParse(serialWidthRaw, out var sw)
+            ? sw
+            : Math.Clamp((int)Math.Round(tableRoiScreen.Width * 0.12), 80, 280);
+        serialWidth = Math.Clamp(serialWidth, 20, Math.Max(20, tableRoiScreen.Width - serialX));
+
+        var serialRoiScreen = new BBox(tableRoiScreen.X + serialX, tableRoiScreen.Y, serialWidth, tableRoiScreen.Height);
+        var serialRoiWindow = new BBox(tableRoiWindow.X + serialX, tableRoiWindow.Y, serialWidth, tableRoiWindow.Height);
+        var pagingPreparationMode = string.IsNullOrWhiteSpace(entry.PagingPreparationMode)
+            ? "default"
+            : entry.PagingPreparationMode.Trim();
+
+        TestlabDebugMarkers.WritePhase(
+            "runner.table_scroll_target",
+            run.RunDirectory,
+            $"table={entry.TableName};roi=({tableRoiScreen.X},{tableRoiScreen.Y},{tableRoiScreen.Width},{tableRoiScreen.Height});roiWindow=({tableRoiWindow.X},{tableRoiWindow.Y},{tableRoiWindow.Width},{tableRoiWindow.Height});interaction=({interactionRoiScreen.X},{interactionRoiScreen.Y},{interactionRoiScreen.Width},{interactionRoiScreen.Height});interactionWindow=({interactionRoiWindow.X},{interactionRoiWindow.Y},{interactionRoiWindow.Width},{interactionRoiWindow.Height});focus=({focusX},{focusY});focusWindow={(entry.PagingFocusPointWindow is WindowPoint focusWindow ? $"({focusWindow.X},{focusWindow.Y})" : "<auto>")};activation=({activationX},{activationY});activationWindow={(entry.PagingActivationPointWindow is WindowPoint activationWindow ? $"({activationWindow.X},{activationWindow.Y})" : "<none>")};preparationMode={SanitizePhaseValue(pagingPreparationMode)};scrollbar=({scrollbarRoiScreen.X},{scrollbarRoiScreen.Y},{scrollbarRoiScreen.Width},{scrollbarRoiScreen.Height})"
+        );
+
+        return new TestlabTableScanContext(
+            entry,
+            win,
+            tableRoiScreen,
+            tableRoiWindow,
+            interactionRoiScreen,
+            interactionRoiWindow,
+            serialRoiScreen,
+            serialRoiWindow,
+            scrollbarRoiScreen,
+            scrollbarRoiWindow,
+            focusX,
+            focusY,
+            activationX,
+            activationY,
+            entry.PagingActivationPointWindow is not null,
+            pagingPreparationMode,
+            topSerialVerifyRoiWindow,
+            topSerialVerifySha256
+        );
+    }
+
+    private static void PrimeTableScanInteraction(
+        WindowController controller,
+        TestlabTableScanContext context
+    )
+    {
+        if (ReusePagingPreparation(context.PagingPreparationMode))
+        {
+            return;
+        }
+
+        var pointerMode = GetTablePointerInputMode(context.PagingPreparationMode);
+        DispatchPointerClick(controller, context.ActivationX, context.ActivationY, pointerMode);
+        Thread.Sleep(80);
+        DispatchPointerClick(controller, context.FocusX, context.FocusY, pointerMode);
+        Thread.Sleep(80);
+    }
+
+    private static (List<TestlabTableScanChunkResult> Chunks, List<TestlabTableScrollEvent> ScrollEvents) CaptureTableChunksWithDeterministicPaging(
+        RunContext run,
+        WindowController controller,
+        ICaptureOverlay? overlay,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        TestlabTableScanContext context,
+        int maxSteps
+    )
+    {
+        var chunks = new List<TestlabTableScanChunkResult>();
+        var scrollEvents = new List<TestlabTableScrollEvent>();
+
+        var (currentChunk, currentScrollbarHash) = CaptureTableChunk(
+            run,
+            controller,
+            overlay,
+            capturer,
+            screenshots,
+            context,
+            chunkIndex: 0
+        );
+        chunks.Add(currentChunk);
+        var lastStateHash = $"{currentChunk.SerialSha256}:{currentScrollbarHash}";
+
+        for (var step = 0; step < Math.Max(0, maxSteps - 1); step++)
+        {
+            var scroll = TryScrollToNextChunk(
+                run,
+                controller,
+                overlay,
+                capturer,
+                screenshots,
+                context,
+                currentChunk.SerialSha256,
+                currentScrollbarHash,
+                step
+            );
+            scrollEvents.Add(scroll);
+            if (!scroll.Changed)
+            {
+                break;
+            }
+
+            var (nextChunk, nextScrollbarHash) = CaptureTableChunk(
+                run,
+                controller,
+                overlay,
+                capturer,
+                screenshots,
+                context,
+                chunkIndex: chunks.Count
+            );
+            var nextStateHash = $"{nextChunk.SerialSha256}:{nextScrollbarHash}";
+            if (string.Equals(lastStateHash, nextStateHash, StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            chunks.Add(nextChunk);
+            currentChunk = nextChunk;
+            currentScrollbarHash = nextScrollbarHash;
+            lastStateHash = nextStateHash;
+        }
+
+        return (chunks, scrollEvents);
+    }
+
+    private static (TestlabTableScanChunkResult Chunk, string ScrollbarHash) CaptureTableChunk(
+        RunContext run,
+        WindowController controller,
+        ICaptureOverlay? overlay,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        TestlabTableScanContext context,
+        int chunkIndex
+    )
+    {
+        if (!SkipChunkFocusClick(context.PagingPreparationMode))
+        {
+            controller.ClickScreenPoint(context.FocusX, context.FocusY);
+            Thread.Sleep(60);
+        }
+        overlay?.SetRect(context.TableRoiScreen);
+        Thread.Sleep(80);
+        var windowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
+        _ = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(context.Entry.TableName)}_window_v_{chunkIndex:00}", windowBytes);
+        var bytes = ImageCropper.TryCropToPngBytes(windowBytes, context.TableRoiWindow) ?? windowBytes;
+        var path = screenshots.SaveEvidencePng(run, $"testlab_table_{Normalize(context.Entry.TableName)}_v_{chunkIndex:00}", bytes);
+        var frameHash = ComputeSha256Hex(bytes);
+        var serialBytes = ImageCropper.TryCropToPngBytes(windowBytes, context.SerialRoiWindow) ?? bytes;
+        var serialPath = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(context.Entry.TableName)}_serial_v_{chunkIndex:00}", serialBytes);
+        var serialHash = ComputeSha256Hex(serialBytes);
+        var scrollbarBytes = ImageCropper.TryCropToPngBytes(windowBytes, context.ScrollbarRoiWindow) ?? bytes;
+        var scrollbarHash = ComputeSha256Hex(scrollbarBytes);
+        var chunk = new TestlabTableScanChunkResult(chunkIndex, path, context.TableRoiScreen, frameHash, context.SerialRoiScreen, serialPath, serialHash);
+        return (chunk, scrollbarHash);
     }
 
     private static (byte[] Bytes, string Sha256) CaptureRoiSha256(
@@ -1118,28 +1414,21 @@ public sealed class TestlabAutomationRunner
         ICaptureOverlay? overlay,
         ScreenCapture capturer,
         ScreenshotStore screenshots,
-        TestlabTableEntryResult entry,
-        TestlabWindowInfo win,
-        BBox roiScreen,
-        BBox roiWindow,
-        int serialX,
-        int serialWidthHint,
-        BBox scrollbarRoiScreen,
-        BBox scrollbarRoiWindow,
-        int focusX,
-        int focusY,
+        TestlabTableScanContext context,
         int pauseMs,
-        BBox? topSerialVerifyRoiWindow,
-        string? topSerialVerifySha256
+        BBox? unusedTopSerialVerifyRoiWindow = null,
+        string? unusedTopSerialVerifySha256 = null
     )
     {
+        var entry = context.Entry;
+        var win = context.Window;
         if (!RequiresDeterministicTopReset(entry))
         {
             return true;
         }
 
-        controller.ClickScreenPoint(focusX, focusY);
-        Thread.Sleep(60);
+        var reusePreparation = ReusePagingPreparation(context.PagingPreparationMode);
+        var keyTarget = PrepareTableForPaging(run, controller, context);
 
         var pgUpCount = GetIntEnv("CHECKMIND_TABLE_RESET_TOP_PGUP_COUNT", 10);
         var pgUpRetryCount = GetIntEnv("CHECKMIND_TABLE_RESET_TOP_PGUP_RETRY_COUNT", 5);
@@ -1147,22 +1436,19 @@ public sealed class TestlabAutomationRunner
         var keyDelayMs = GetIntEnv("CHECKMIND_TABLE_KEY_DELAY_MS", 10);
         var pagePauseMs = GetIntEnv("CHECKMIND_TABLE_PAGE_PAUSE_MS", 25);
 
-        var beforeWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
-        var beforeTableBytes = ImageCropper.TryCropToPngBytes(beforeWindowBytes, roiWindow) ?? beforeWindowBytes;
+        var beforeWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
+        var beforeTableBytes = ImageCropper.TryCropToPngBytes(beforeWindowBytes, context.TableRoiWindow) ?? beforeWindowBytes;
         _ = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(entry.TableName)}_reset_top_before", beforeTableBytes);
 
-        var serialWidth = Math.Clamp(serialWidthHint, 20, Math.Max(20, roiWindow.Width - serialX));
-        var serialRoiWindow = new BBox(roiWindow.X + serialX, roiWindow.Y, serialWidth, roiWindow.Height);
-
-        static (string SerialSha, string ScrollbarSha) CaptureResetState(byte[] windowBytes, BBox roiWindow, BBox serialRoiWindow, BBox scrollbarRoiWindow)
+        static (string SerialSha, string ScrollbarSha) CaptureResetState(TestlabTableScanContext scanContext, byte[] windowBytes)
         {
-            var tableBytes = ImageCropper.TryCropToPngBytes(windowBytes, roiWindow) ?? windowBytes;
-            var serialBytes = ImageCropper.TryCropToPngBytes(windowBytes, serialRoiWindow) ?? tableBytes;
-            var scrollbarBytes = ImageCropper.TryCropToPngBytes(windowBytes, scrollbarRoiWindow) ?? tableBytes;
+            var tableBytes = ImageCropper.TryCropToPngBytes(windowBytes, scanContext.TableRoiWindow) ?? windowBytes;
+            var serialBytes = ImageCropper.TryCropToPngBytes(windowBytes, scanContext.SerialRoiWindow) ?? tableBytes;
+            var scrollbarBytes = ImageCropper.TryCropToPngBytes(windowBytes, scanContext.ScrollbarRoiWindow) ?? tableBytes;
             return (ComputeSha256Hex(serialBytes), ComputeSha256Hex(scrollbarBytes));
         }
 
-        var (beforeSerialSha, beforeScrollbarSha) = CaptureResetState(beforeWindowBytes, roiWindow, serialRoiWindow, scrollbarRoiWindow);
+        var (beforeSerialSha, beforeScrollbarSha) = CaptureResetState(context, beforeWindowBytes);
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var pressAttempts = 0;
@@ -1177,15 +1463,15 @@ public sealed class TestlabAutomationRunner
         {
             for (var i = 0; i < Math.Max(0, times); i++)
             {
-                controller.PressPageUp(keyDelayMs);
+                DispatchPagingKey(run, controller, entry.TableName, win, context.PagingPreparationMode, keyTarget, pageDown: false, keyDelayMs);
                 pressAttempts++;
             }
         }
 
         bool ProbeTopStable()
         {
-            var probeWindowBytes0 = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
-            var (probeSerialSha0, probeScrollbarSha0) = CaptureResetState(probeWindowBytes0, roiWindow, serialRoiWindow, scrollbarRoiWindow);
+            var probeWindowBytes0 = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
+            var (probeSerialSha0, probeScrollbarSha0) = CaptureResetState(context, probeWindowBytes0);
             var lastHash = $"{probeSerialSha0}:{probeScrollbarSha0}";
             var allSame = true;
 
@@ -1195,11 +1481,15 @@ public sealed class TestlabAutomationRunner
 
             for (var i = 0; i < stableConsecutive; i++)
             {
-                controller.PressPageUp(keyDelayMs);
+                if (!reusePreparation)
+                {
+                    keyTarget = PrepareTableForPaging(run, controller, context);
+                }
+                DispatchPagingKey(run, controller, entry.TableName, context.Window, context.PagingPreparationMode, keyTarget, pageDown: false, keyDelayMs);
                 pressAttempts++;
                 Thread.Sleep(pagePauseMs);
-                var probeWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
-                var (probeSerialSha, probeScrollbarSha) = CaptureResetState(probeWindowBytes, roiWindow, serialRoiWindow, scrollbarRoiWindow);
+                var probeWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
+                var (probeSerialSha, probeScrollbarSha) = CaptureResetState(context, probeWindowBytes);
                 var nextHash = $"{probeSerialSha}:{probeScrollbarSha}";
                 allSame = allSame && string.Equals(lastHash, nextHash, StringComparison.OrdinalIgnoreCase);
                 lastHash = nextHash;
@@ -1227,24 +1517,24 @@ public sealed class TestlabAutomationRunner
         var topSignatureMatched = TryVerifyTopBySerialSignature(
             run,
             currentWindowBytes,
-            serialRoiWindow,
-            topSerialVerifyRoiWindow,
+            context.SerialRoiWindow,
+            context.TopSerialVerifyRoiWindow,
             screenshots,
             entry.TableName,
-            topSerialVerifySha256
+            context.TopSerialVerifySha256
         );
         var finalTopReached = reachedTopStable;
 
         sw.Stop();
         var elapsedMs = sw.ElapsedMilliseconds;
 
-        var afterTableBytes = ImageCropper.TryCropToPngBytes(currentWindowBytes, roiWindow) ?? currentWindowBytes;
+        var afterTableBytes = ImageCropper.TryCropToPngBytes(currentWindowBytes, context.TableRoiWindow) ?? currentWindowBytes;
         _ = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(entry.TableName)}_reset_top_after", afterTableBytes);
 
         TestlabDebugMarkers.WritePhase(
             "runner.table_reset_top",
             run.RunDirectory,
-            $"table={entry.TableName};method=pgup;serialChanged={!string.Equals(beforeSerialSha, currentSerialSha, StringComparison.OrdinalIgnoreCase)};scrollbarChanged={!string.Equals(beforeScrollbarSha, currentScrollbarSha, StringComparison.OrdinalIgnoreCase)};focus=({focusX},{focusY});pgup={pgUpCount};retry={pgUpRetryCount};stableConsecutive={stableConsecutive};stableRun={stableRun};keyDelayMs={keyDelayMs};pagePauseMs={pagePauseMs};pressAttempts={pressAttempts};elapsedMs={elapsedMs};stableByHash={(reachedTopStable ? 1 : 0)};topSignature={(topSignatureMatched ? 1 : 0)};stableTop={(finalTopReached ? 1 : 0)}"
+            $"table={entry.TableName};method=pgup;serialChanged={!string.Equals(beforeSerialSha, currentSerialSha, StringComparison.OrdinalIgnoreCase)};scrollbarChanged={!string.Equals(beforeScrollbarSha, currentScrollbarSha, StringComparison.OrdinalIgnoreCase)};focus=({context.FocusX},{context.FocusY});pgup={pgUpCount};retry={pgUpRetryCount};stableConsecutive={stableConsecutive};stableRun={stableRun};keyDelayMs={keyDelayMs};pagePauseMs={pagePauseMs};pressAttempts={pressAttempts};elapsedMs={elapsedMs};stableByHash={(reachedTopStable ? 1 : 0)};topSignature={(topSignatureMatched ? 1 : 0)};stableTop={(finalTopReached ? 1 : 0)}"
         );
         return finalTopReached;
     }
@@ -1314,21 +1604,13 @@ public sealed class TestlabAutomationRunner
         ICaptureOverlay? overlay,
         ScreenCapture capturer,
         ScreenshotStore screenshots,
-        string tableName,
-        TestlabWindowInfo win,
-        BBox roiScreen,
-        BBox roiWindow,
-        BBox serialRoiScreen,
-        BBox serialRoiWindow,
-        BBox scrollbarRoiScreen,
-        BBox scrollbarRoiWindow,
-        int focusX,
-        int focusY,
+        TestlabTableScanContext context,
         string currentSerialSha256,
         string currentScrollbarSha256,
         int step
     )
     {
+        var tableName = context.Entry.TableName;
         var debugArtifacts = IsDebugArtifactsEnabled();
         var keyDelayMs = GetIntEnv("CHECKMIND_TABLE_KEY_DELAY_MS", 10);
         var pagePauseMs = GetIntEnv("CHECKMIND_TABLE_PAGE_PAUSE_MS", 25);
@@ -1343,23 +1625,23 @@ public sealed class TestlabAutomationRunner
                 return;
             }
 
-            var windowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
+            var windowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
             _ = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(tableName)}_window_after_v_{step:00}_{method}", windowBytes);
-            var roiBytes = ImageCropper.TryCropToPngBytes(windowBytes, roiWindow) ?? windowBytes;
+            var roiBytes = ImageCropper.TryCropToPngBytes(windowBytes, context.TableRoiWindow) ?? windowBytes;
             _ = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(tableName)}_after_v_{step:00}_{method}", roiBytes);
             _ = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(tableName)}_serial_after_v_{step:00}_{method}", serialBytes);
             TestlabDebugMarkers.WritePhase(
                 "runner.table_scroll_attempt",
                 run.RunDirectory,
-                $"table={tableName};step={step};method={method};serialChanged={!string.Equals(serialSha, currentSerialSha256, StringComparison.OrdinalIgnoreCase)};scrollbarChanged={!string.Equals(scrollbarSha, currentScrollbarSha256, StringComparison.OrdinalIgnoreCase)};focus=({focusX},{focusY});scrollbar=({scrollbarRoiScreen.X},{scrollbarRoiScreen.Y},{scrollbarRoiScreen.Width},{scrollbarRoiScreen.Height})"
+                $"table={tableName};step={step};method={method};serialChanged={!string.Equals(serialSha, currentSerialSha256, StringComparison.OrdinalIgnoreCase)};scrollbarChanged={!string.Equals(scrollbarSha, currentScrollbarSha256, StringComparison.OrdinalIgnoreCase)};focus=({context.FocusX},{context.FocusY});scrollbar=({context.ScrollbarRoiScreen.X},{context.ScrollbarRoiScreen.Y},{context.ScrollbarRoiScreen.Width},{context.ScrollbarRoiScreen.Height})"
             );
         }
 
         bool Detect(out string afterSerialSha, out string afterScrollbarSha, out byte[] afterSerialBytes)
         {
-            var windowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
-            var serialBytes = ImageCropper.TryCropToPngBytes(windowBytes, serialRoiWindow) ?? windowBytes;
-            var scrollbarBytes = ImageCropper.TryCropToPngBytes(windowBytes, scrollbarRoiWindow) ?? windowBytes;
+            var windowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
+            var serialBytes = ImageCropper.TryCropToPngBytes(windowBytes, context.SerialRoiWindow) ?? windowBytes;
+            var scrollbarBytes = ImageCropper.TryCropToPngBytes(windowBytes, context.ScrollbarRoiWindow) ?? windowBytes;
             var serialSha = ComputeSha256Hex(serialBytes);
             var scrollbarSha = ComputeSha256Hex(scrollbarBytes);
             afterSerialBytes = serialBytes;
@@ -1369,9 +1651,10 @@ public sealed class TestlabAutomationRunner
                    !string.Equals(scrollbarSha, currentScrollbarSha256, StringComparison.OrdinalIgnoreCase);
         }
 
-        controller.ClickScreenPoint(focusX, focusY);
-        Thread.Sleep(50);
-        controller.PressPageDown(keyDelayMs);
+        var keyTarget = ReusePagingPreparation(context.PagingPreparationMode)
+            ? context.Window.Hwnd
+            : PrepareTableForPaging(run, controller, context);
+        DispatchPagingKey(run, controller, tableName, context.Window, context.PagingPreparationMode, keyTarget, pageDown: true, keyDelayMs);
         Thread.Sleep(pagePauseMs);
         Detect(out var pageShaProbe, out var pageBarProbe, out var pageBytesProbe);
         SaveMethodEvidence("pgdn", pageBytesProbe, pageShaProbe, pageBarProbe);
@@ -1384,10 +1667,10 @@ public sealed class TestlabAutomationRunner
             return Make("pgdn", sha3, bar3, true);
         }
 
-        var finalWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
-        var finalBytes = ImageCropper.TryCropToPngBytes(finalWindowBytes, serialRoiWindow) ?? finalWindowBytes;
+        var finalWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
+        var finalBytes = ImageCropper.TryCropToPngBytes(finalWindowBytes, context.SerialRoiWindow) ?? finalWindowBytes;
         var finalSha = ComputeSha256Hex(finalBytes);
-        var finalScrollbarBytes = ImageCropper.TryCropToPngBytes(finalWindowBytes, scrollbarRoiWindow) ?? finalWindowBytes;
+        var finalScrollbarBytes = ImageCropper.TryCropToPngBytes(finalWindowBytes, context.ScrollbarRoiWindow) ?? finalWindowBytes;
         var finalBar = ComputeSha256Hex(finalScrollbarBytes);
         _ = screenshots.SaveDebugPng(run, $"testlab_table_{Normalize(tableName)}_serial_after_v_{step:00}_fail", finalBytes);
         TestlabDebugMarkers.WritePhase(
@@ -1396,6 +1679,292 @@ public sealed class TestlabAutomationRunner
             $"table={tableName};step={step};method=pgdn;keyDelayMs={keyDelayMs};pagePauseMs={pagePauseMs}"
         );
         return Make("fail", finalSha, finalBar, false);
+    }
+
+    private static IntPtr PrepareTableForPaging(
+        RunContext run,
+        WindowController controller,
+        TestlabTableScanContext context
+    )
+    {
+        var tableName = context.Entry.TableName;
+        var win = context.Window;
+        var singleActivationOnly = UseSingleActivationOnly(context.PagingPreparationMode);
+        var focusClickCount = singleActivationOnly ? 0 : GetIntEnv("CHECKMIND_TABLE_FOCUS_CLICK_COUNT", 2);
+        var focusClickPauseMs = GetIntEnv("CHECKMIND_TABLE_FOCUS_CLICK_PAUSE_MS", 90);
+        var focusSettleMs = GetIntEnv("CHECKMIND_TABLE_FOCUS_SETTLE_MS", 220);
+        var activationClickCount = GetIntEnv("CHECKMIND_TABLE_ACTIVATION_CLICK_COUNT", 1);
+        var activationClickPauseMs = GetIntEnv("CHECKMIND_TABLE_ACTIVATION_CLICK_PAUSE_MS", 120);
+        var activationSettleMs = GetIntEnv("CHECKMIND_TABLE_ACTIVATION_SETTLE_MS", 320);
+        var pointerMode = GetTablePointerInputMode(context.PagingPreparationMode);
+
+        controller.Activate(win.Hwnd);
+        Thread.Sleep(Math.Max(0, focusClickPauseMs));
+
+        var beforeForeground = controller.GetForegroundWindowHandle();
+        var beforeForegroundTitle = Win32Native.GetWindowTitle(beforeForeground);
+        var pointWindowBefore = controller.GetWindowFromScreenPoint(context.FocusX, context.FocusY);
+        var pointWindowBeforeTitle = Win32Native.GetWindowTitle(pointWindowBefore);
+        var activationPointWindowBefore = controller.GetWindowFromScreenPoint(context.ActivationX, context.ActivationY);
+        var activationPointWindowBeforeTitle = Win32Native.GetWindowTitle(activationPointWindowBefore);
+
+        IntPtr activationPointWindowAfter = activationPointWindowBefore;
+        string? activationPointWindowAfterTitle = activationPointWindowBeforeTitle;
+        if (context.HasExplicitActivation)
+        {
+            DispatchPointerClicks(run, controller, tableName, "activation", context.ActivationX, context.ActivationY, activationClickCount, activationClickPauseMs, pointerMode);
+
+            Thread.Sleep(Math.Max(0, activationSettleMs));
+            activationPointWindowAfter = controller.GetWindowFromScreenPoint(context.ActivationX, context.ActivationY);
+            activationPointWindowAfterTitle = Win32Native.GetWindowTitle(activationPointWindowAfter);
+        }
+
+        var useSeparateFocusStage = !singleActivationOnly &&
+                                    (!context.HasExplicitActivation || context.ActivationX != context.FocusX || context.ActivationY != context.FocusY);
+
+        if (useSeparateFocusStage && focusClickCount > 0)
+        {
+            DispatchPointerClicks(run, controller, tableName, "focus", context.FocusX, context.FocusY, focusClickCount, focusClickPauseMs, pointerMode);
+        }
+
+        if (focusClickCount > 0)
+        {
+            Thread.Sleep(Math.Max(0, focusSettleMs));
+        }
+
+        var afterForeground = controller.GetForegroundWindowHandle();
+        var afterForegroundTitle = Win32Native.GetWindowTitle(afterForeground);
+        var pointWindowAfter = focusClickCount > 0
+            ? controller.GetWindowFromScreenPoint(context.FocusX, context.FocusY)
+            : activationPointWindowAfter;
+        var pointWindowAfterTitle = Win32Native.GetWindowTitle(pointWindowAfter);
+
+        var resolvedKeyTarget = pointWindowAfter != IntPtr.Zero
+            ? pointWindowAfter
+            : activationPointWindowAfter != IntPtr.Zero
+                ? activationPointWindowAfter
+                : win.Hwnd;
+
+        TestlabDebugMarkers.WritePhase(
+            "runner.table_focus",
+            run.RunDirectory,
+            $"table={tableName};focus=({context.FocusX},{context.FocusY});activation=({context.ActivationX},{context.ActivationY});hasActivation={(context.HasExplicitActivation ? 1 : 0)};preparationMode={SanitizePhaseValue(context.PagingPreparationMode)};activationClickCount={activationClickCount};activationPauseMs={activationClickPauseMs};activationSettleMs={activationSettleMs};clickCount={focusClickCount};clickPauseMs={focusClickPauseMs};settleMs={focusSettleMs};targetHwnd=0x{win.Hwnd.ToInt64():X};targetTitle={SanitizePhaseValue(win.Title)};beforeFg=0x{beforeForeground.ToInt64():X};beforeFgTitle={SanitizePhaseValue(beforeForegroundTitle)};afterFg=0x{afterForeground.ToInt64():X};afterFgTitle={SanitizePhaseValue(afterForegroundTitle)};activationPointBefore=0x{activationPointWindowBefore.ToInt64():X};activationPointBeforeTitle={SanitizePhaseValue(activationPointWindowBeforeTitle)};activationPointAfter=0x{activationPointWindowAfter.ToInt64():X};activationPointAfterTitle={SanitizePhaseValue(activationPointWindowAfterTitle)};pointBefore=0x{pointWindowBefore.ToInt64():X};pointBeforeTitle={SanitizePhaseValue(pointWindowBeforeTitle)};pointAfter=0x{pointWindowAfter.ToInt64():X};pointAfterTitle={SanitizePhaseValue(pointWindowAfterTitle)};resolvedKeyTarget=0x{resolvedKeyTarget.ToInt64():X}"
+        );
+        return resolvedKeyTarget;
+    }
+
+    private static void DispatchPagingKey(
+        RunContext run,
+        WindowController controller,
+        string tableName,
+        TestlabWindowInfo win,
+        string pagingPreparationMode,
+        IntPtr keyTarget,
+        bool pageDown,
+        int keyDelayMs
+    )
+    {
+        var mode = GetTableKeyInputMode(pagingPreparationMode);
+        var beforeForeground = controller.GetForegroundWindowHandle();
+        var beforeForegroundTitle = Win32Native.GetWindowTitle(beforeForeground);
+
+        if (string.Equals(mode, "foreground", StringComparison.OrdinalIgnoreCase))
+        {
+            controller.Activate(win.Hwnd);
+            var foregroundSettleMs = GetIntEnv("CHECKMIND_TABLE_KEY_FOREGROUND_SETTLE_MS", 80);
+            if (foregroundSettleMs > 0)
+            {
+                Thread.Sleep(foregroundSettleMs);
+            }
+
+            if (pageDown)
+            {
+                controller.PressPageDownToForegroundWindow(keyDelayMs);
+            }
+            else
+            {
+                controller.PressPageUpToForegroundWindow(keyDelayMs);
+            }
+        }
+        else if (string.Equals(mode, "sendinput_foreground", StringComparison.OrdinalIgnoreCase))
+        {
+            controller.Activate(win.Hwnd);
+            var foregroundSettleMs = GetIntEnv("CHECKMIND_TABLE_KEY_FOREGROUND_SETTLE_MS", 80);
+            if (foregroundSettleMs > 0)
+            {
+                Thread.Sleep(foregroundSettleMs);
+            }
+
+            if (pageDown)
+            {
+                controller.PressPageDownToForegroundWindowBySendInput(keyDelayMs);
+            }
+            else
+            {
+                controller.PressPageUpToForegroundWindowBySendInput(keyDelayMs);
+            }
+        }
+        else
+        {
+            if (pageDown)
+            {
+                controller.PressPageDownToWindow(keyTarget, keyDelayMs);
+            }
+            else
+            {
+                controller.PressPageUpToWindow(keyTarget, keyDelayMs);
+            }
+        }
+
+        var afterForeground = controller.GetForegroundWindowHandle();
+        var afterForegroundTitle = Win32Native.GetWindowTitle(afterForeground);
+        TestlabDebugMarkers.WritePhase(
+            "runner.table_key_dispatch",
+            run.RunDirectory,
+            $"table={tableName};key={(pageDown ? "pgdn" : "pgup")};mode={mode};targetHwnd=0x{keyTarget.ToInt64():X};targetTitle={SanitizePhaseValue(win.Title)};beforeFg=0x{beforeForeground.ToInt64():X};beforeFgTitle={SanitizePhaseValue(beforeForegroundTitle)};afterFg=0x{afterForeground.ToInt64():X};afterFgTitle={SanitizePhaseValue(afterForegroundTitle)};keyDelayMs={keyDelayMs}"
+        );
+    }
+
+    private static void DispatchPointerClicks(
+        RunContext run,
+        WindowController controller,
+        string tableName,
+        string role,
+        int x,
+        int y,
+        int clickCount,
+        int clickPauseMs,
+        string mode
+    )
+    {
+        var normalizedClickCount = Math.Max(1, clickCount);
+        TestlabDebugMarkers.WritePhase(
+            "runner.table_pointer_dispatch",
+            run.RunDirectory,
+            $"table={tableName};role={role};mode={mode};point=({x},{y});clickCount={normalizedClickCount};clickPauseMs={clickPauseMs}"
+        );
+
+        for (var i = 0; i < normalizedClickCount; i++)
+        {
+            DispatchPointerClick(controller, x, y, mode);
+
+            Thread.Sleep(Math.Max(0, clickPauseMs));
+        }
+    }
+
+    private static void DispatchPointerClick(
+        WindowController controller,
+        int x,
+        int y,
+        string mode
+    )
+    {
+        if (string.Equals(mode, "sendinput", StringComparison.OrdinalIgnoreCase))
+        {
+            controller.ClickScreenPointBySendInput(x, y);
+        }
+        else
+        {
+            controller.ClickScreenPoint(x, y);
+        }
+    }
+
+    private static string GetTableKeyInputMode(string? pagingPreparationMode)
+    {
+        var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
+        if (modeNorm == "activationforeground" ||
+            modeNorm == "foregroundactivation")
+        {
+            return "foreground";
+        }
+
+        if (modeNorm == "activationsendinputforeground" ||
+            modeNorm == "sendinputforegroundactivation" ||
+            modeNorm == "notchprofile" ||
+            modeNorm == "notchprofilesendinput")
+        {
+            return "sendinput_foreground";
+        }
+
+        var raw = (Environment.GetEnvironmentVariable("CHECKMIND_TABLE_KEY_INPUT_MODE") ?? string.Empty).Trim();
+        if (string.Equals(raw, "foreground", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(raw, "physical", StringComparison.OrdinalIgnoreCase))
+        {
+            return "foreground";
+        }
+
+        if (string.Equals(raw, "sendinput", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(raw, "sendinput_foreground", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(raw, "foreground_sendinput", StringComparison.OrdinalIgnoreCase))
+        {
+            return "sendinput_foreground";
+        }
+
+        return "window_message";
+    }
+
+    private static string GetTablePointerInputMode(string? pagingPreparationMode)
+    {
+        var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
+        if (modeNorm == "activationforeground" ||
+            modeNorm == "foregroundactivation")
+        {
+            return "mouse_event";
+        }
+
+        if (modeNorm == "activationsendinputforeground" ||
+            modeNorm == "sendinputforegroundactivation" ||
+            modeNorm == "notchprofile" ||
+            modeNorm == "notchprofilesendinput")
+        {
+            return "sendinput";
+        }
+
+        var raw = (Environment.GetEnvironmentVariable("CHECKMIND_TABLE_POINTER_INPUT_MODE") ?? string.Empty).Trim();
+        if (string.Equals(raw, "sendinput", StringComparison.OrdinalIgnoreCase))
+        {
+            return "sendinput";
+        }
+
+        return "mouse_event";
+    }
+
+    private static bool ReusePagingPreparation(string? pagingPreparationMode)
+    {
+        var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
+        return modeNorm == "activationforeground" ||
+               modeNorm == "foregroundactivation" ||
+               modeNorm == "activationsendinputforeground" ||
+               modeNorm == "sendinputforegroundactivation" ||
+               modeNorm == "notchprofile" ||
+               modeNorm == "notchprofilesendinput";
+    }
+
+    private static bool UseSingleActivationOnly(string? pagingPreparationMode)
+    {
+        var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
+        return modeNorm == "activationforeground" ||
+               modeNorm == "foregroundactivation";
+    }
+
+    private static bool SkipChunkFocusClick(string? pagingPreparationMode)
+    {
+        var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
+        return modeNorm == "activationforeground" ||
+               modeNorm == "foregroundactivation";
+    }
+
+    private static string SanitizePhaseValue(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return "<empty>";
+        }
+
+        return value
+            .Replace(";", ",", StringComparison.Ordinal)
+            .Replace("\r", " ", StringComparison.Ordinal)
+            .Replace("\n", " ", StringComparison.Ordinal);
     }
 
     private static string ComputeSha256Hex(byte[] bytes)
@@ -1410,7 +1979,296 @@ public sealed class TestlabAutomationRunner
         File.WriteAllText(Path.Combine(run.RunDirectory, "coverage.json"), json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
-    private static IReadOnlyList<TestlabTableScanResult> GetAllTableScans(IReadOnlyList<TestlabTabSwitchResult> switches)
+    private static IReadOnlyList<TestlabNotchProfileScanResult>? RunNotchProfilesIfRequested(
+        RunContext run,
+        WindowController controller,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        ICaptureOverlay? overlay
+    )
+    {
+        var indexes = GetNotchProfileIndexesFromEnv();
+        if (indexes.Count == 0)
+        {
+            return null;
+        }
+
+        var profileStore = WorkstationProfileStore.CreateDefault();
+        var profile = profileStore.Load();
+        var defineNotchWindow = profile.FindChildWindowProfile("define_notch_profiles")
+            ?? throw new InvalidOperationException("profile 缺少 ChildWindows.define_notch_profiles 配置。");
+        var listTarget = defineNotchWindow.FindListTarget("notch_profiles_list")
+            ?? throw new InvalidOperationException("profile 缺少 define_notch_profiles.listTargets.notch_profiles_list 配置。");
+        var notchProfileWindow = profile.FindChildWindowProfile("notch_profile")
+            ?? throw new InvalidOperationException("profile 缺少 ChildWindows.notch_profile 配置。");
+        var tableScanTarget = notchProfileWindow.FindCaptureTarget("table_scan")
+            ?? throw new InvalidOperationException("profile 缺少 notch_profile.captureTargets.table_scan 配置。");
+        if (tableScanTarget.RoiWindow is not BBox tableRoiWindow)
+        {
+            throw new InvalidOperationException("profile 缺少 notch_profile.captureTargets.table_scan.RoiWindow 配置。");
+        }
+
+        var entryClickSequence = defineNotchWindow.GetOpenClickSequence();
+        if (entryClickSequence.Length == 0)
+        {
+            throw new InvalidOperationException("profile 缺少 define_notch_profiles.openClickSequence / openClickPoint 配置。");
+        }
+
+        var childTitleContains = (Environment.GetEnvironmentVariable("CHECKMIND_NOTCH_PROFILE_TITLE_CONTAINS") ?? "Notch Profile").Trim();
+        if (string.IsNullOrWhiteSpace(childTitleContains))
+        {
+            childTitleContains = "Notch Profile";
+        }
+
+        var mainWindow = new TestlabWindowLocator().Find();
+        var childLocator = new TestlabChildWindowLocator();
+        var automation = new TestlabChildWindowAutomation(childLocator, controller);
+        var results = new List<TestlabNotchProfileScanResult>();
+
+        controller.Activate(mainWindow.Hwnd);
+        Thread.Sleep(80);
+        _ = RestoreSineSetupChannelSafetyParameters(
+            run,
+            controller,
+            capturer,
+            screenshots,
+            overlay,
+            mainWindow,
+            "Sine Setup",
+            0,
+            evidencePrefix: "notch_profiles"
+        );
+
+        foreach (var point in entryClickSequence)
+        {
+            controller.ClickWindowPoint(mainWindow.Hwnd, point);
+            Thread.Sleep(180);
+        }
+        Thread.Sleep(600);
+
+        var defineWindow = new TestlabWindowLocator().Find();
+        controller.Maximize(defineWindow.Hwnd);
+        Thread.Sleep(250);
+        controller.Activate(defineWindow.Hwnd);
+        Thread.Sleep(80);
+
+        var fixedProfile = IsFixedCaptureEnabled()
+            ? profile
+            : null;
+        var maxStepsRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_V_MAX_STEPS");
+        var maxSteps = int.TryParse(maxStepsRaw, out var v) ? v : 8;
+        maxSteps = Math.Clamp(maxSteps, 1, 50);
+
+        var pauseRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_PAUSE_MS");
+        var pauseMs = int.TryParse(pauseRaw, out var p) ? p : 250;
+        pauseMs = Math.Clamp(pauseMs, 80, 2000);
+
+        foreach (var rowIndex in indexes)
+        {
+            TestlabDebugMarkers.WritePhase("runner.notch_profile_scan_begin", run.RunDirectory, $"row={rowIndex}");
+            controller.Activate(defineWindow.Hwnd);
+            Thread.Sleep(80);
+
+            var defineWindowScreenshotPath = screenshots.SaveEvidencePng(
+                run,
+                $"notch_profiles_define_window_before_open_{rowIndex:00}",
+                capturer.CaptureWindowPngBytes(defineWindow.Hwnd)
+            );
+
+            var opened = automation.OpenChildWindowFromIndexedListEntry(
+                defineWindow,
+                listTarget,
+                rowIndex,
+                childTitleContains,
+                maximizeChildWindow: true
+            );
+
+            var notchWindow = childLocator.FindByTitleContains(
+                childTitleContains,
+                processName: defineWindow.ProcessName,
+                timeoutMs: 1000
+            );
+            controller.Activate(notchWindow.Hwnd);
+            Thread.Sleep(120);
+
+            var notchWindowPngBytes = capturer.CaptureWindowPngBytes(notchWindow.Hwnd);
+            var tableEntryBytes = ImageCropper.TryCropToPngBytes(notchWindowPngBytes, tableRoiWindow) ?? notchWindowPngBytes;
+            var tableEntryPath = screenshots.SaveEvidencePng(run, $"notch_profile_{rowIndex:00}_table_entry", tableEntryBytes);
+            var tableRoiScreen = MapWindowRoiToScreenRoi(tableRoiWindow, notchWindow);
+
+            var entry = new TestlabTableEntryResult(
+                "Notch Profile",
+                $"Notch Profile Table #{rowIndex}",
+                tableEntryPath,
+                tableRoiWindow,
+                tableRoiScreen,
+                tableScanTarget.PagingFocusPointWindow,
+                tableScanTarget.PagingActivationPointWindow,
+                tableScanTarget.PagingPreparationMode
+            );
+
+            var tableScan = ScanSingleTableWithDeterministicPaging(
+                run,
+                controller,
+                overlay,
+                capturer,
+                screenshots,
+                notchWindow,
+                entry,
+                fixedProfile,
+                maxSteps,
+                pauseMs
+            );
+
+            var (closeMode, childWindowClosed) = CloseChildWindow(
+                controller,
+                childLocator,
+                notchWindow,
+                childTitleContains,
+                defineWindow.ProcessName,
+                notchProfileWindow
+            );
+
+            string? defineAfterClosePath = null;
+            if (childWindowClosed)
+            {
+                defineWindow = new TestlabWindowLocator().Find();
+                controller.Activate(defineWindow.Hwnd);
+                Thread.Sleep(120);
+                defineAfterClosePath = screenshots.SaveEvidencePng(
+                    run,
+                    $"notch_profiles_define_window_after_close_{rowIndex:00}",
+                    capturer.CaptureWindowPngBytes(defineWindow.Hwnd)
+                );
+            }
+            else
+            {
+                TestlabDebugMarkers.WritePhase(
+                    "runner.notch_profile_close_failed",
+                    run.RunDirectory,
+                    $"row={rowIndex};closeMode={closeMode};childTitleContains={childTitleContains}"
+                );
+                throw new InvalidOperationException(
+                    $"Notch Profile 序号 {rowIndex} 扫描完成后子窗口未关闭，已停止继续执行后续序号。closeMode={closeMode}"
+                );
+            }
+
+            results.Add(
+                new TestlabNotchProfileScanResult(
+                    rowIndex,
+                    opened,
+                    defineWindowScreenshotPath,
+                    tableEntryPath,
+                    tableRoiWindow,
+                    tableRoiScreen,
+                    tableScan,
+                    closeMode,
+                    childWindowClosed,
+                    defineAfterClosePath
+                )
+            );
+            TestlabDebugMarkers.WritePhase(
+                "runner.notch_profile_scan_completed",
+                run.RunDirectory,
+                $"row={rowIndex};chunks={tableScan.Chunks.Count};unique={tableScan.UniqueChunkCount};closed={(childWindowClosed ? 1 : 0)}"
+            );
+        }
+
+        return results;
+    }
+
+    private static (byte[] WindowBytes, string ScreenshotPath) RestoreSineSetupChannelSafetyParameters(
+        RunContext run,
+        WindowController controller,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        ICaptureOverlay? overlay,
+        TestlabWindowInfo win,
+        string tabName,
+        int index,
+        string evidencePrefix
+    )
+    {
+        var profile = WorkstationProfileStore.CreateDefault().Load();
+        var (restoreSequence, source) = ResolveSineSetupChannelSafetyRestoreSequence(profile);
+
+        controller.Activate(win.Hwnd);
+        Thread.Sleep(100);
+        foreach (var restorePoint in restoreSequence)
+        {
+            controller.ClickWindowPoint(win.Hwnd, restorePoint);
+            Thread.Sleep(180);
+        }
+        var settleMs = GetIntEnv("CHECKMIND_SINE_SETUP_CHANNEL_SAFETY_RESTORE_SLEEP_MS", 360);
+        Thread.Sleep(settleMs);
+
+        TestlabDebugMarkers.WritePhase(
+            "runner.sine_setup_channel_safety_restored",
+            run.RunDirectory,
+            $"tab={tabName};source={source};sequence={FormatWindowPointSequence(restoreSequence)};sleepMs={settleMs}"
+        );
+
+        overlay?.SetRect(new BBox(win.Rect.Left, win.Rect.Top, win.Rect.Width, win.Rect.Height));
+        Thread.Sleep(120);
+        var bytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
+        var path = screenshots.SaveEvidencePng(run, $"{evidencePrefix}_{index:00}_sine_setup_channel_safety_restored", bytes);
+        return (bytes, path);
+    }
+
+    private static (WindowPoint[] Sequence, string Source) ResolveSineSetupChannelSafetyRestoreSequence(WorkstationProfile profile)
+    {
+        var directSequence = profile.FindDialogAction("sine_setup_channel_safety_parameters")?.GetClickSequence();
+        if (directSequence is not null && directSequence.Length > 0)
+        {
+            return (directSequence, "dialog_action_sequence");
+        }
+
+        var defineSequence = profile.FindChildWindowProfile("define_notch_profiles")?.GetOpenClickSequence();
+        if (defineSequence is not null && defineSequence.Length > 0)
+        {
+            return (defineSequence, "define_notch_profiles_open_sequence_fallback");
+        }
+
+        throw new InvalidOperationException("profile 缺少 `Channel safety parameters` 恢复点击点；请先执行相关标定。");
+    }
+
+    private static string FormatWindowPointSequence(IReadOnlyList<WindowPoint> sequence)
+        => string.Join("->", sequence.Select(static p => $"({p.X},{p.Y})"));
+
+    private static IReadOnlyList<int> GetNotchProfileIndexesFromEnv()
+    {
+        var raw = (Environment.GetEnvironmentVariable("CHECKMIND_NOTCH_PROFILE_INDEXES") ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            raw = (Environment.GetEnvironmentVariable("CHECKMIND_NOTCH_PROFILE_INDEX") ?? string.Empty).Trim();
+        }
+
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return Array.Empty<int>();
+        }
+
+        var values = new List<int>();
+        foreach (var token in raw.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!int.TryParse(token, out var index) || index <= 0)
+            {
+                throw new InvalidOperationException($"非法 Notch Profile 序号：{token}");
+            }
+
+            if (!values.Contains(index))
+            {
+                values.Add(index);
+            }
+        }
+
+        return values;
+    }
+
+    private static IReadOnlyList<TestlabTableScanResult> GetAllTableScans(
+        IReadOnlyList<TestlabTabSwitchResult> switches,
+        IReadOnlyList<TestlabNotchProfileScanResult>? notchProfileScans
+    )
     {
         var scans = new List<TestlabTableScanResult>();
         foreach (var item in switches)
@@ -1423,7 +2281,50 @@ public sealed class TestlabAutomationRunner
             scans.AddRange(item.TableScans);
         }
 
+        if (notchProfileScans is not null)
+        {
+            foreach (var item in notchProfileScans)
+            {
+                scans.Add(item.TableScan);
+            }
+        }
+
         return scans;
+    }
+
+    private static (string CloseMode, bool Closed) CloseChildWindow(
+        WindowController controller,
+        TestlabChildWindowLocator childLocator,
+        TestlabWindowInfo openedChildWindow,
+        string childTitleContains,
+        string? processName,
+        WorkstationChildWindowProfile childWindowProfile
+    )
+    {
+        controller.Activate(openedChildWindow.Hwnd);
+        Thread.Sleep(120);
+
+        var closeMode = "alt_f4";
+        if (childWindowProfile.CloseClickPoint is WindowPoint closeClickPoint)
+        {
+            controller.ClickWindowPoint(openedChildWindow.Hwnd, closeClickPoint);
+            closeMode = "click_point";
+        }
+        else
+        {
+            controller.CloseForegroundWindowByShortcut();
+        }
+
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            Thread.Sleep(120);
+            if (childLocator.TryFindByTitleContains(childTitleContains, processName) is null)
+            {
+                return (closeMode, true);
+            }
+        }
+
+        return (closeMode, false);
     }
 
     private static IReadOnlyList<TestlabTableScanChunkResult> GetUniqueChunksBySerial(IReadOnlyList<TestlabTableScanChunkResult> chunks)
@@ -1440,6 +2341,27 @@ public sealed class TestlabAutomationRunner
 
         return unique;
     }
+
+    private sealed record TestlabTableScanContext(
+        TestlabTableEntryResult Entry,
+        TestlabWindowInfo Window,
+        BBox TableRoiScreen,
+        BBox TableRoiWindow,
+        BBox InteractionRoiScreen,
+        BBox InteractionRoiWindow,
+        BBox SerialRoiScreen,
+        BBox SerialRoiWindow,
+        BBox ScrollbarRoiScreen,
+        BBox ScrollbarRoiWindow,
+        int FocusX,
+        int FocusY,
+        int ActivationX,
+        int ActivationY,
+        bool HasExplicitActivation,
+        string PagingPreparationMode,
+        BBox? TopSerialVerifyRoiWindow,
+        string? TopSerialVerifySha256
+    );
 
     private static void WriteTableEvidenceReport(
         RunContext run,
@@ -1561,7 +2483,8 @@ public sealed class TestlabAutomationRunner
         var normalizedTab = Normalize(entry.TabName);
         var normalizedTable = Normalize(entry.TableName);
         return (normalizedTab == Normalize("Sine Setup") && normalizedTable == Normalize("Channel Parameters Table")) ||
-               (normalizedTab == Normalize("Channel Setup") && normalizedTable == Normalize("Channel Setup Table"));
+               (normalizedTab == Normalize("Channel Setup") && normalizedTable == Normalize("Channel Setup Table")) ||
+               (normalizedTab == Normalize("Notch Profile") && normalizedTable.StartsWith(Normalize("Notch Profile Table"), StringComparison.Ordinal));
     }
 
     private static BBox MapWindowRoiToScreenRoi(BBox roiWindow, BBox contentBounds, TestlabWindowInfo win)
@@ -2894,7 +3817,8 @@ public readonly record struct DesktopPoint(int X, int Y);
 public sealed record TestlabRunResult(
     string BeforeMaximizeScreenshotPath,
     string AfterMaximizeScreenshotPath,
-    IReadOnlyList<TestlabTabSwitchResult> TabSwitches
+    IReadOnlyList<TestlabTabSwitchResult> TabSwitches,
+    IReadOnlyList<TestlabNotchProfileScanResult>? NotchProfileScans = null
 );
 
 public sealed record TestlabTabSwitchResult(
@@ -2925,7 +3849,10 @@ public sealed record TestlabTableEntryResult(
     string TableName,
     string ScreenshotPath,
     BBox TableRoiWindow,
-    BBox TableRoiScreen
+    BBox TableRoiScreen,
+    WindowPoint? PagingFocusPointWindow = null,
+    WindowPoint? PagingActivationPointWindow = null,
+    string? PagingPreparationMode = null
 );
 
 public sealed record TestlabTableScanResult(
@@ -2946,4 +3873,17 @@ public sealed record TestlabTableScanChunkResult(
     BBox SerialRoiScreen,
     string SerialScreenshotPath,
     string SerialSha256
+);
+
+public sealed record TestlabNotchProfileScanResult(
+    int TargetRowIndex,
+    TestlabChildWindowOpenResult Opened,
+    string DefineNotchProfilesScreenshotPath,
+    string TableEntryScreenshotPath,
+    BBox TableRoiWindow,
+    BBox TableRoiScreen,
+    TestlabTableScanResult TableScan,
+    string CloseMode,
+    bool ChildWindowClosed,
+    string? DefineNotchProfilesAfterCloseScreenshotPath
 );
