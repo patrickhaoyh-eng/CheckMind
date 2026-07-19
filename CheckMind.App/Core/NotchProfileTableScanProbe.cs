@@ -100,6 +100,7 @@ public sealed class NotchProfileTableScanProbe
             notchWindow,
             entry,
             fixedProfile,
+            childWindowProfile: null,
             maxSteps,
             pauseMs
         );

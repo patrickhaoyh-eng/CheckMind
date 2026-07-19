@@ -510,12 +510,6 @@ public sealed class TestlabTabClickPointCalibrator
             return directSequence;
         }
 
-        var defineSequence = profile.FindChildWindowProfile("define_notch_profiles")?.GetOpenClickSequence();
-        if (defineSequence is not null && defineSequence.Length > 0)
-        {
-            return defineSequence;
-        }
-
         throw new InvalidOperationException("profile 缺少 `Channel safety parameters` 恢复点击点；请先执行相关标定。");
     }
 

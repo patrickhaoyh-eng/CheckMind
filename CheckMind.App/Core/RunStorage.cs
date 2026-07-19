@@ -43,7 +43,8 @@ public sealed class RunStorage
                 CreatedAtUtc: DateTimeOffset.UtcNow,
                 TrialId: options.TrialId,
                 OperatorName: options.OperatorName,
-                Inputs: Array.Empty<RunInputRef>()
+                Inputs: Array.Empty<RunInputRef>(),
+                TaskRequest: options.TaskRequest
             );
 
             var metaJson = JsonSerializer.Serialize(meta, RunMetaJsonContext.Default.RunMeta);
@@ -53,14 +54,17 @@ public sealed class RunStorage
         var resultsPath = Path.Combine(runDirectory, "results.json");
         if (!File.Exists(resultsPath))
         {
-            var resultsSkeleton = $$"""
-            {
-              "runId": "{{runId}}",
-              "generatedAtUtc": "{{DateTimeOffset.UtcNow:O}}",
-              "alerts": []
-            }
-            """;
-            File.WriteAllText(resultsPath, resultsSkeleton, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            var runContext = new RunContext(
+                runId,
+                runDirectory,
+                inputsDirectory,
+                screenshotsDirectory,
+                cropsDirectory,
+                ocrDirectory,
+                metaPath,
+                resultsPath
+            );
+            new RunResultsStore().Initialize(runContext, options.TaskRequest);
         }
 
         return new RunContext(
@@ -91,7 +95,8 @@ public sealed class RunStorage
 public sealed record RunCreateOptions(
     string? TrialId = null,
     string? OperatorName = null,
-    string? RunId = null
+    string? RunId = null,
+    TaskCreateRequest? TaskRequest = null
 );
 
 public sealed record RunContext(

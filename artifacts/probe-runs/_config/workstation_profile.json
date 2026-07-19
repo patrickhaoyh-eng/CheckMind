@@ -39,16 +39,16 @@
     {
       "DialogKey": "sine_setup_channel_safety_parameters",
       "ClickPoint": {
-        "X": 1102,
+        "X": 1086,
         "Y": 147
       },
       "ClickSequence": [
         {
-          "X": 1102,
+          "X": 1086,
           "Y": 147
         },
         {
-          "X": 1102,
+          "X": 1077,
           "Y": 174
         }
       ]
@@ -86,7 +86,7 @@
             "Width": 348,
             "Height": 48
           },
-          "Sha256": "FDC9B3243C3CACF85C364F0D72265A544E165B025647F1BEC1EE751000806BB7"
+          "Sha256": "F34F33D03D06526E0C66A70FFC2138DCE0D89D86ED77178D571B2897A4DDDAA0"
         },
         {
           "Key": "top_serial",
@@ -103,6 +103,15 @@
     {
       "TabName": "Sine Setup",
       "CaptureTargets": [
+        {
+          "Key": "control_panel",
+          "RoiWindow": {
+            "X": 1561,
+            "Y": 135,
+            "Width": 364,
+            "Height": 858
+          }
+        },
         {
           "Key": "table_entry",
           "RoiWindow": {
@@ -131,7 +140,7 @@
             "Width": 348,
             "Height": 48
           },
-          "Sha256": "2658CEFC82BA3B284687A259D28941ED04512AED36427C14FFB10BFA87C27B11"
+          "Sha256": "6070B2AF1814DB00F9FC70987C775F48C635C269DC0E250C0C0FF80B047ECC59"
         },
         {
           "Key": "top_serial",
@@ -150,36 +159,48 @@
     {
       "WindowKey": "define_notch_profiles",
       "OpenClickPoint": {
-        "X": 1086,
+        "X": 1093,
         "Y": 147
       },
       "OpenClickSequence": [
         {
-          "X": 1086,
+          "X": 1093,
           "Y": 147
         },
         {
-          "X": 1072,
-          "Y": 213
+          "X": 1086,
+          "Y": 217
         }
       ],
       "MustMaximize": true,
+      "VerifyTargets": [
+        {
+          "Key": "notch_profiles_layout",
+          "RoiWindow": {
+            "X": 0,
+            "Y": 553,
+            "Width": 214,
+            "Height": 98
+          },
+          "Sha256": "8EE6254988E90B7A067D0372CDBBE28576377026C6F6AFD92117CB8DCE91DE3B"
+        }
+      ],
       "ListTargets": [
         {
           "Key": "notch_profiles_list",
           "RoiWindow": {
-            "X": 15,
+            "X": 20,
             "Y": 164,
-            "Width": 201,
+            "Width": 195,
             "Height": 420
           },
           "FirstRowAnchor": {
             "X": 31,
-            "Y": 196
+            "Y": 195
           },
-          "RowHeight": 20,
+          "RowHeight": 21,
           "ActionClickPoint": {
-            "X": 48,
+            "X": 51,
             "Y": 615
           }
         }
@@ -210,6 +231,124 @@
             "Y": 220
           },
           "PagingPreparationMode": "activation_foreground"
+        }
+      ]
+    },
+    {
+      "WindowKey": "profile_editor",
+      "OpenClickPoint": {
+        "X": 1403,
+        "Y": 740
+      },
+      "MustMaximize": true,
+      "CloseClickPoint": {
+        "X": 1901,
+        "Y": 17
+      },
+      "CaptureTargets": [
+        {
+          "Key": "table_scan",
+          "RoiWindow": {
+            "X": 312,
+            "Y": 33,
+            "Width": 1595,
+            "Height": 526
+          },
+          "PagingFocusPointWindow": {
+            "X": 1456,
+            "Y": 244
+          },
+          "PagingActivationPointWindow": {
+            "X": 1541,
+            "Y": 243
+          },
+          "PagingPreparationMode": "activation_foreground"
+        }
+      ],
+      "VerifyTargets": [
+        {
+          "Key": "window_verify",
+          "RoiWindow": {
+            "X": 312,
+            "Y": 33,
+            "Width": 1596,
+            "Height": 526
+          },
+          "Sha256": "17DCFE2078C11A473900D18B5AB8E67D6AFD6ACB788BFBDFC7E3E4DF684F19FB"
+        },
+        {
+          "Key": "top_serial",
+          "RoiWindow": {
+            "X": 312,
+            "Y": 33,
+            "Width": 215,
+            "Height": 105
+          },
+          "Sha256": "53AFC3847D5C51BAA82430F7F4E3FE2D777FD3B1F5893EDC987D2A2E6F7E9B67"
+        }
+      ]
+    },
+    {
+      "WindowKey": "advanced_control_setup",
+      "OpenClickPoint": {
+        "X": 1868,
+        "Y": 340
+      },
+      "MustMaximize": true,
+      "CloseClickPoint": {
+        "X": 1903,
+        "Y": 19
+      },
+      "TabClickPoints": [
+        {
+          "TabName": "Safety",
+          "ClickPoint": {
+            "X": 92,
+            "Y": 48
+          }
+        },
+        {
+          "TabName": "Measurements",
+          "ClickPoint": {
+            "X": 174,
+            "Y": 45
+          }
+        },
+        {
+          "TabName": "Throughput Recording",
+          "ClickPoint": {
+            "X": 269,
+            "Y": 46
+          }
+        }
+      ],
+      "CaptureTargets": [
+        {
+          "Key": "safety",
+          "RoiWindow": {
+            "X": 13,
+            "Y": 38,
+            "Width": 1911,
+            "Height": 976
+          }
+        },
+        {
+          "Key": "measurements",
+          "RoiWindow": {
+            "X": 9,
+            "Y": 34,
+            "Width": 416,
+            "Height": 161
+          }
+        },
+        {
+          "Key": "throughput_recording",
+          "RoiWindow": {
+            "X": 9,
+            "Y": 32,
+            "Width": 376,
+            "Height": 96
+          }
         }
       ]
     }

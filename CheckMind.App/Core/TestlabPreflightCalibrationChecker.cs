@@ -168,6 +168,8 @@ public sealed class TestlabPreflightCalibrationChecker
             }
         }
 
+        CheckDefineNotchProfilesListTarget(profile, w, h, failures);
+
         sw.Stop();
         var reportPath = Path.Combine(run.RunDirectory, "preflight_calibration_report.json");
         var report = new PreflightCalibrationReport(
@@ -190,4 +192,202 @@ public sealed class TestlabPreflightCalibrationChecker
             throw new PreflightCalibrationGateException("人工标定运行前核验失败：请先修复标定项后再执行。", reportPath);
         }
     }
+
+    private static void CheckDefineNotchProfilesListTarget(
+        WorkstationProfile profile,
+        int windowWidth,
+        int windowHeight,
+        List<PreflightCalibrationFailure> failures
+    )
+    {
+        var defineWindow = profile.FindChildWindowProfile("define_notch_profiles");
+        if (defineWindow is null)
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "define_notch_profiles_profile_missing",
+                Message: "缺少子窗口 profile：define_notch_profiles",
+                Expected: "ChildWindows[] contains define_notch_profiles",
+                Actual: "null",
+                Suggestion: "请先完成 Define notch profiles 标定。"
+            ));
+            return;
+        }
+
+        var openSequence = defineWindow.GetOpenClickSequence();
+        if (openSequence.Length == 0)
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "define_notch_profiles_open_sequence_missing",
+                Message: "缺少 Define notch profiles 入口点击序列",
+                Expected: "define_notch_profiles.openClickSequence / openClickPoint configured",
+                Actual: "null",
+                Suggestion: "请重新标定 Define notch profiles 的入口点击点。"
+            ));
+        }
+        else
+        {
+            for (var i = 0; i < openSequence.Length; i++)
+            {
+                if (!IsPointWithinWindow(openSequence[i], windowWidth, windowHeight))
+                {
+                    failures.Add(new PreflightCalibrationFailure(
+                        Key: "define_notch_profiles_open_sequence_out_of_window",
+                        Message: $"Define notch profiles 第 {i + 1} 个入口点击点不在窗口内",
+                        Expected: $"0<=x<{windowWidth}, 0<=y<{windowHeight}",
+                        Actual: $"({openSequence[i].X},{openSequence[i].Y})",
+                        Suggestion: "请重新标定 Define notch profiles 入口点击点，确保点位位于主窗口内。"
+                    ));
+                }
+            }
+        }
+
+        var listTarget = defineWindow.FindListTarget("notch_profiles_list");
+        if (listTarget is null)
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_list_target_missing",
+                Message: "缺少 Notch Profiles 列表导航配置",
+                Expected: "define_notch_profiles.listTargets.notch_profiles_list configured",
+                Actual: "null",
+                Suggestion: "请重新标定 Notch Profiles 列表 ROI、首行锚点、行高和 Edit 按钮。"
+            ));
+            return;
+        }
+
+        if (listTarget.RoiWindow is not BBox roi)
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_list_roi_missing",
+                Message: "缺少 Notch Profiles 列表 ROI",
+                Expected: "notch_profiles_list.RoiWindow configured",
+                Actual: "null",
+                Suggestion: "请重新标定 Notch Profiles 列表 ROI。"
+            ));
+            return;
+        }
+
+        if (!IsRoiWithinWindow(roi, windowWidth, windowHeight))
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_list_roi_out_of_window",
+                Message: "Notch Profiles 列表 ROI 不在最大化子窗口范围内",
+                Expected: $"roi within 0..{windowWidth}x{windowHeight}",
+                Actual: $"({roi.X},{roi.Y},{roi.Width},{roi.Height})",
+                Suggestion: "请重新标定 Notch Profiles 列表 ROI，确保其位于最大化子窗口范围内。"
+            ));
+        }
+
+        if (listTarget.FirstRowAnchor is not WindowPoint firstRowAnchor)
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_first_row_anchor_missing",
+                Message: "缺少 Notch Profiles 首行锚点",
+                Expected: "notch_profiles_list.FirstRowAnchor configured",
+                Actual: "null",
+                Suggestion: "请重新标定 Notch Profiles 首行锚点。"
+            ));
+        }
+        else if (!IsPointWithinRoi(firstRowAnchor, roi))
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_first_row_anchor_out_of_roi",
+                Message: "Notch Profiles 首行锚点不在列表 ROI 内",
+                Expected: $"point within roi ({roi.X},{roi.Y},{roi.Width},{roi.Height})",
+                Actual: $"({firstRowAnchor.X},{firstRowAnchor.Y})",
+                Suggestion: "请重新标定 Notch Profiles 首行锚点，确保位于列表 ROI 内。"
+            ));
+        }
+
+        if (listTarget.RowHeight is not int rowHeight || rowHeight <= 0)
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_row_height_invalid",
+                Message: "缺少有效的 Notch Profiles 行高",
+                Expected: "notch_profiles_list.RowHeight > 0",
+                Actual: listTarget.RowHeight?.ToString() ?? "null",
+                Suggestion: "请重新标定第 1/第 2 行锚点，确保行高被正确写入。"
+            ));
+        }
+        else if (listTarget.FirstRowAnchor is WindowPoint anchor)
+        {
+            var secondRowPoint = new WindowPoint(anchor.X, anchor.Y + rowHeight);
+            if (!IsPointWithinRoi(secondRowPoint, roi))
+            {
+                failures.Add(new PreflightCalibrationFailure(
+                    Key: "notch_profiles_second_row_out_of_roi",
+                    Message: "根据首行锚点与行高推导出的第 2 行点击点超出列表 ROI",
+                    Expected: $"point within roi ({roi.X},{roi.Y},{roi.Width},{roi.Height})",
+                    Actual: $"({secondRowPoint.X},{secondRowPoint.Y})",
+                    Suggestion: "请重新标定 Notch Profiles 第 1/第 2 行锚点；若列表布局已漂移，请先恢复布局后再标定。"
+                ));
+            }
+        }
+
+        if (listTarget.ActionClickPoint is not WindowPoint actionClickPoint)
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_action_click_missing",
+                Message: "缺少 Notch Profiles 的 Edit 按钮点击点",
+                Expected: "notch_profiles_list.ActionClickPoint configured",
+                Actual: "null",
+                Suggestion: "请重新标定 Notch Profiles 的 Edit 按钮点击点。"
+            ));
+        }
+        else if (!IsPointWithinWindow(actionClickPoint, windowWidth, windowHeight))
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_action_click_out_of_window",
+                Message: "Notch Profiles 的 Edit 按钮点击点不在最大化子窗口范围内",
+                Expected: $"0<=x<{windowWidth}, 0<=y<{windowHeight}",
+                Actual: $"({actionClickPoint.X},{actionClickPoint.Y})",
+                Suggestion: "请重新标定 Notch Profiles 的 Edit 按钮点击点。"
+            ));
+        }
+
+        var layoutVerify = defineWindow.FindVerifyTarget("notch_profiles_layout");
+        if (layoutVerify is null || layoutVerify.RoiWindow is null || string.IsNullOrWhiteSpace(layoutVerify.Sha256))
+        {
+            failures.Add(new PreflightCalibrationFailure(
+                Key: "notch_profiles_layout_verify_missing",
+                Message: "缺少 Notch Profiles 列表布局签名",
+                Expected: "define_notch_profiles.VerifyTargets.notch_profiles_layout (RoiWindow + Sha256) configured",
+                Actual: "null",
+                Suggestion: "请执行 Notch Profiles 布局签名标定，固化列表首屏与 Edit 区域的标准布局。"
+            ));
+        }
+        else
+        {
+            var verifyRoi = layoutVerify.RoiWindow.Value;
+            if (!IsRoiWithinWindow(verifyRoi, windowWidth, windowHeight))
+            {
+                failures.Add(new PreflightCalibrationFailure(
+                    Key: "notch_profiles_layout_verify_out_of_window",
+                    Message: "Notch Profiles 列表布局签名 ROI 不在最大化子窗口范围内",
+                    Expected: $"roi within 0..{windowWidth}x{windowHeight}",
+                    Actual: $"({verifyRoi.X},{verifyRoi.Y},{verifyRoi.Width},{verifyRoi.Height})",
+                    Suggestion: "请重新标定 Notch Profiles 布局签名，确保签名 ROI 位于最大化子窗口范围内。"
+                ));
+            }
+        }
+    }
+
+    private static bool IsPointWithinWindow(WindowPoint point, int windowWidth, int windowHeight)
+        => point.X >= 0 &&
+           point.Y >= 0 &&
+           point.X < windowWidth &&
+           point.Y < windowHeight;
+
+    private static bool IsPointWithinRoi(WindowPoint point, BBox roi)
+        => point.X >= roi.X &&
+           point.Y >= roi.Y &&
+           point.X < (roi.X + roi.Width) &&
+           point.Y < (roi.Y + roi.Height);
+
+    private static bool IsRoiWithinWindow(BBox roi, int windowWidth, int windowHeight)
+        => roi.X >= 0 &&
+           roi.Y >= 0 &&
+           roi.Width > 0 &&
+           roi.Height > 0 &&
+           (roi.X + roi.Width) <= windowWidth &&
+           (roi.Y + roi.Height) <= windowHeight;
 }

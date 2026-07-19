@@ -110,8 +110,8 @@ public sealed class TestlabAutomationRunner
             }
             TestlabDebugMarkers.WritePhase("runner.after_switch_tabs", run.RunDirectory, $"count={switches.Count}");
 
-            var notchProfileScans = RunNotchProfilesIfRequested(run, controller, capturer, screenshots, overlay);
-            var result = new TestlabRunResult(beforePath, afterPath, switches, notchProfileScans);
+            var (notchProfileScans, notchProfileCountMismatch) = RunNotchProfilesIfRequested(run, controller, capturer, screenshots, overlay);
+            var result = new TestlabRunResult(beforePath, afterPath, switches, notchProfileScans, notchProfileCountMismatch);
             WriteCoverage(run, GetAllTableScans(switches, notchProfileScans));
             TestlabDebugMarkers.WritePhase("runner.before_write_run_result", run.RunDirectory);
             WriteRunResult(run, result);
@@ -978,8 +978,10 @@ public sealed class TestlabAutomationRunner
                 );
             }
 
+            var fixedCaptures = CapturePageFixedTargetsIfNeeded(run, target, shot1Bytes, screenshots, i, win, fixedProfile);
             var tableEntries = CaptureTableEntriesIfNeeded(run, target, shot1Bytes, capturer, screenshots, i, win, tabsRoiWindow, overlay);
             var tableScans = ScanTablesVerticallyIfNeeded(run, target, controller, capturer, screenshots, win, tableEntries, overlay);
+            var childWindowCaptures = CaptureFixedChildWindowsIfNeeded(run, target, controller, capturer, screenshots, win, i, fixedProfile);
             var regions = fixedProfile is not null && fastSwitch
                 ? Array.Empty<TestlabPageRegionResult>()
                 : DetectPageRegionsIfNeeded(run, target, shot1Bytes, GetOcrRunner(), screenshots, i, win, overlay);
@@ -993,7 +995,9 @@ public sealed class TestlabAutomationRunner
                     regions,
                     TabsRoiWindow: tabsRoiWindow,
                     TableEntries: tableEntries,
-                    TableScans: tableScans
+                    TableScans: tableScans,
+                    FixedCaptures: fixedCaptures,
+                    ChildWindowCaptures: childWindowCaptures
                 )
             );
         }
@@ -1079,6 +1083,425 @@ public sealed class TestlabAutomationRunner
         };
     }
 
+    private static IReadOnlyList<TestlabFixedCaptureResult> CapturePageFixedTargetsIfNeeded(
+        RunContext run,
+        string tabName,
+        byte[] windowImageBytes,
+        ScreenshotStore screenshots,
+        int tabIndex,
+        TestlabWindowInfo win,
+        WorkstationProfile? fixedProfile
+    )
+    {
+        if (fixedProfile is null)
+        {
+            return Array.Empty<TestlabFixedCaptureResult>();
+        }
+
+        var pageProfile = fixedProfile.FindPageProfile(tabName);
+        if (pageProfile is null)
+        {
+            return Array.Empty<TestlabFixedCaptureResult>();
+        }
+
+        var results = new List<TestlabFixedCaptureResult>();
+        foreach (var target in pageProfile.CaptureTargets ?? [])
+        {
+            var keyNorm = Normalize(target.Key);
+            if (keyNorm is "tableentry" or "tablescan")
+            {
+                continue;
+            }
+
+            if (target.RoiWindow is not BBox roiWindow)
+            {
+                continue;
+            }
+
+            var bytes = ImageCropper.TryCropToPngBytes(windowImageBytes, roiWindow);
+            if (bytes is null || bytes.Length == 0)
+            {
+                TestlabDebugMarkers.WritePhase(
+                    "runner.page_fixed_capture_crop_failed",
+                    run.RunDirectory,
+                    $"tab={tabName};key={target.Key};roi=({roiWindow.X},{roiWindow.Y},{roiWindow.Width},{roiWindow.Height})"
+                );
+                continue;
+            }
+
+            var path = screenshots.SaveEvidencePng(
+                run,
+                $"testlab_tabs_{tabIndex:00}_{Normalize(tabName)}_{Normalize(target.Key)}",
+                bytes
+            );
+            results.Add(
+                new TestlabFixedCaptureResult(
+                    target.Key,
+                    path,
+                    roiWindow,
+                    MapWindowRoiToScreenRoi(roiWindow, win)
+                )
+            );
+        }
+
+        return results;
+    }
+
+    private static IReadOnlyList<TestlabChildWindowCaptureResult> CaptureFixedChildWindowsIfNeeded(
+        RunContext run,
+        string tabName,
+        WindowController controller,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        TestlabWindowInfo win,
+        int tabIndex,
+        WorkstationProfile? fixedProfile
+    )
+    {
+        if (fixedProfile is null || Normalize(tabName) != Normalize("Sine Setup"))
+        {
+            return Array.Empty<TestlabChildWindowCaptureResult>();
+        }
+
+        var windowKeys = new[] { "profile_editor", "advanced_control_setup" };
+        var results = new List<TestlabChildWindowCaptureResult>();
+        foreach (var windowKey in windowKeys)
+        {
+            var childProfile = fixedProfile.FindChildWindowProfile(windowKey);
+            if (childProfile is null)
+            {
+                continue;
+            }
+
+            results.Add(
+                CaptureFixedChildWindow(
+                    run,
+                    controller,
+                    capturer,
+                    screenshots,
+                    win,
+                    tabIndex,
+                    windowKey,
+                    childProfile
+                )
+            );
+        }
+
+        return results;
+    }
+
+    private static TestlabChildWindowCaptureResult CaptureFixedChildWindow(
+        RunContext run,
+        WindowController controller,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        TestlabWindowInfo mainWindow,
+        int tabIndex,
+        string windowKey,
+        WorkstationChildWindowProfile childWindowProfile
+    )
+    {
+        var titleContains = ResolveChildWindowTitleContains(windowKey);
+        var childLocator = new TestlabChildWindowLocator();
+        TestlabWindowInfo? childWindow = null;
+
+        try
+        {
+            var openSequence = childWindowProfile.GetOpenClickSequence();
+            if (openSequence.Length == 0)
+            {
+                throw new InvalidOperationException($"profile 缺少 {windowKey}.openClickSequence / openClickPoint 配置。");
+            }
+
+            controller.Activate(mainWindow.Hwnd);
+            Thread.Sleep(100);
+            foreach (var point in openSequence)
+            {
+                controller.ClickWindowPoint(mainWindow.Hwnd, point);
+                Thread.Sleep(180);
+            }
+
+            var resolvedChildWindow = childLocator.FindByTitleContains(
+                titleContains,
+                processName: mainWindow.ProcessName,
+                timeoutMs: 2000
+            );
+            childWindow = resolvedChildWindow;
+
+            if (childWindowProfile.MustMaximize)
+            {
+                controller.Activate(resolvedChildWindow.Hwnd);
+                Thread.Sleep(80);
+                controller.Maximize(resolvedChildWindow.Hwnd);
+                Thread.Sleep(120);
+                controller.Activate(resolvedChildWindow.Hwnd);
+                Thread.Sleep(250);
+                resolvedChildWindow = childLocator.FindByTitleContains(
+                    titleContains,
+                    processName: mainWindow.ProcessName,
+                    timeoutMs: 1000
+                );
+                childWindow = resolvedChildWindow;
+            }
+
+            var openedWindowPath = screenshots.SaveEvidencePng(
+                run,
+                $"testlab_tabs_{tabIndex:00}_{Normalize(windowKey)}_window_opened",
+                capturer.CaptureWindowPngBytes(resolvedChildWindow.Hwnd)
+            );
+
+            var captures = new List<TestlabFixedCaptureResult>();
+            var tableScans = new List<TestlabTableScanResult>();
+            foreach (var target in childWindowProfile.CaptureTargets ?? [])
+            {
+                if (target.RoiWindow is not BBox roiWindow)
+                {
+                    continue;
+                }
+
+                var tabClick = childWindowProfile.FindTabClickTarget(target.Key);
+                string? sourceTabName = null;
+                if (tabClick?.ClickPoint is WindowPoint clickPoint)
+                {
+                    controller.Activate(resolvedChildWindow.Hwnd);
+                    Thread.Sleep(80);
+                    controller.ClickWindowPoint(resolvedChildWindow.Hwnd, clickPoint);
+                    Thread.Sleep(Math.Clamp(GetIntEnv("CHECKMIND_CHILD_WINDOW_TAB_CAPTURE_SETTLE_MS", 220), 0, 1500));
+                    sourceTabName = tabClick.TabName;
+                }
+
+                if (WorkstationProfileKeys.IsTableScanCaptureKey(WorkstationProfileKeys.Normalize(target.Key)))
+                {
+                    var tableScan = ScanSingleChildWindowTable(
+                        run,
+                        controller,
+                        capturer,
+                        screenshots,
+                        resolvedChildWindow,
+                        childWindowProfile,
+                        windowKey,
+                        target
+                    );
+                    tableScans.Add(tableScan);
+                    continue;
+                }
+
+                var windowBytes = capturer.CaptureWindowPngBytes(resolvedChildWindow.Hwnd);
+                var bytes = ImageCropper.TryCropToPngBytes(windowBytes, roiWindow);
+                if (bytes is null || bytes.Length == 0)
+                {
+                    TestlabDebugMarkers.WritePhase(
+                        "runner.child_window_capture_crop_failed",
+                        run.RunDirectory,
+                        $"windowKey={windowKey};captureKey={target.Key};roi=({roiWindow.X},{roiWindow.Y},{roiWindow.Width},{roiWindow.Height})"
+                    );
+                    continue;
+                }
+
+                var path = screenshots.SaveEvidencePng(
+                    run,
+                    $"testlab_tabs_{tabIndex:00}_{Normalize(windowKey)}_{Normalize(target.Key)}",
+                    bytes
+                );
+                captures.Add(
+                    new TestlabFixedCaptureResult(
+                        target.Key,
+                        path,
+                        roiWindow,
+                        MapWindowRoiToScreenRoi(roiWindow, resolvedChildWindow),
+                        sourceTabName
+                    )
+                );
+            }
+
+            var (closeMode, childWindowClosed) = CloseChildWindow(
+                controller,
+                childLocator,
+                resolvedChildWindow,
+                titleContains,
+                mainWindow.ProcessName,
+                childWindowProfile
+            );
+
+            string? returnedToParentPath = null;
+            if (childWindowClosed)
+            {
+                var returnedMain = new TestlabWindowLocator().Find();
+                controller.Activate(returnedMain.Hwnd);
+                Thread.Sleep(120);
+                returnedToParentPath = screenshots.SaveEvidencePng(
+                    run,
+                    $"testlab_tabs_{tabIndex:00}_{Normalize(windowKey)}_returned_to_parent",
+                    capturer.CaptureWindowPngBytes(returnedMain.Hwnd)
+                );
+            }
+
+            return new TestlabChildWindowCaptureResult(
+                windowKey,
+                titleContains,
+                resolvedChildWindow.Title,
+                openedWindowPath,
+                captures,
+                tableScans,
+                closeMode,
+                childWindowClosed,
+                returnedToParentPath
+            );
+        }
+        catch (Exception ex)
+        {
+            TestlabDebugMarkers.WritePhase(
+                "runner.child_window_capture_exception",
+                run.RunDirectory,
+                $"windowKey={windowKey};type={ex.GetType().Name};message={SanitizeDetail(ex.Message)}"
+            );
+
+            return new TestlabChildWindowCaptureResult(
+                windowKey,
+                titleContains,
+                childWindow?.Title,
+                null,
+                Array.Empty<TestlabFixedCaptureResult>(),
+                Array.Empty<TestlabTableScanResult>(),
+                null,
+                false,
+                null,
+                ex.Message
+            );
+        }
+    }
+
+    private static string ResolveChildWindowTitleContains(string windowKey)
+    {
+        return Normalize(windowKey) switch
+        {
+            "profileeditor" => "Profile Editor",
+            "advancedcontrolsetup" => "Advanced Control Setup",
+            _ => windowKey
+        };
+    }
+
+    private static WindowPoint ComputeDefaultChildWindowPagingFocusPoint(BBox tableRoi)
+    {
+        var serialWidth = Math.Clamp((int)Math.Round(tableRoi.Width * 0.12), 80, 280);
+        var focusX = tableRoi.X + Math.Clamp(serialWidth / 2, 24, Math.Max(24, tableRoi.Width - 1));
+        var focusY = tableRoi.Y + Math.Clamp(tableRoi.Height / 3, 24, Math.Max(24, tableRoi.Height - 1));
+        return new WindowPoint(focusX, focusY);
+    }
+
+    private static WindowPoint ResolveChildWindowPagingFocusPoint(string windowKey, WorkstationCaptureTarget captureTarget, BBox tableRoiWindow)
+    {
+        if (captureTarget.PagingFocusPointWindow is WindowPoint focus)
+        {
+            return focus;
+        }
+
+        if (string.Equals(Normalize(windowKey), "profileeditor", StringComparison.OrdinalIgnoreCase))
+        {
+            return ComputeDefaultChildWindowPagingFocusPoint(tableRoiWindow);
+        }
+
+        return ComputeDefaultChildWindowPagingFocusPoint(tableRoiWindow);
+    }
+
+    private static WindowPoint? ResolveChildWindowPagingActivationPoint(string windowKey, WorkstationCaptureTarget captureTarget, BBox tableRoiWindow)
+    {
+        if (captureTarget.PagingActivationPointWindow is WindowPoint activation)
+        {
+            return activation;
+        }
+
+        if (string.Equals(Normalize(windowKey), "profileeditor", StringComparison.OrdinalIgnoreCase))
+        {
+            return ResolveChildWindowPagingFocusPoint(windowKey, captureTarget, tableRoiWindow);
+        }
+
+        return null;
+    }
+
+    private static string? ResolveChildWindowPagingPreparationMode(string windowKey, WorkstationCaptureTarget captureTarget)
+    {
+        if (!string.IsNullOrWhiteSpace(captureTarget.PagingPreparationMode))
+        {
+            return captureTarget.PagingPreparationMode;
+        }
+
+        if (string.Equals(Normalize(windowKey), "profileeditor", StringComparison.OrdinalIgnoreCase))
+        {
+            return "activation_foreground";
+        }
+
+        return captureTarget.PagingPreparationMode;
+    }
+
+    private static TestlabTableScanResult ScanSingleChildWindowTable(
+        RunContext run,
+        WindowController controller,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        TestlabWindowInfo childWindow,
+        WorkstationChildWindowProfile childWindowProfile,
+        string windowKey,
+        WorkstationCaptureTarget captureTarget
+    )
+    {
+        if (captureTarget.RoiWindow is not BBox tableRoiWindow)
+        {
+            throw new InvalidOperationException($"子窗口 [{windowKey}] 的 table_scan 缺少 RoiWindow。");
+        }
+
+        var title = ResolveChildWindowTitleContains(windowKey);
+        var pagingFocusPointWindow = ResolveChildWindowPagingFocusPoint(windowKey, captureTarget, tableRoiWindow);
+        var pagingActivationPointWindow = ResolveChildWindowPagingActivationPoint(windowKey, captureTarget, tableRoiWindow);
+        var pagingPreparationMode = ResolveChildWindowPagingPreparationMode(windowKey, captureTarget);
+        var entry = new TestlabTableEntryResult(
+            TabName: title,
+            TableName: $"{WorkstationProfileKeys.Normalize(windowKey)}_table_scan",
+            ScreenshotPath: string.Empty,
+            TableRoiWindow: tableRoiWindow,
+            TableRoiScreen: MapWindowRoiToScreenRoi(tableRoiWindow, childWindow),
+            PagingFocusPointWindow: pagingFocusPointWindow,
+            PagingActivationPointWindow: pagingActivationPointWindow,
+            PagingPreparationMode: pagingPreparationMode
+        );
+
+        var maxSteps = ResolveChildWindowTableScanMaxSteps(windowKey);
+
+        var pauseRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_PAUSE_MS");
+        var pauseMs = int.TryParse(pauseRaw, out var p) ? p : 250;
+        pauseMs = Math.Clamp(pauseMs, 80, 2000);
+
+        controller.Activate(childWindow.Hwnd);
+        Thread.Sleep(120);
+
+        return ScanSingleTableWithDeterministicPaging(
+            run,
+            controller,
+            overlay: null,
+            capturer,
+            screenshots,
+            childWindow,
+            entry,
+            fixedProfile: null,
+            childWindowProfile,
+            maxSteps,
+            pauseMs
+        );
+    }
+
+    private static int ResolveChildWindowTableScanMaxSteps(string windowKey)
+    {
+        var maxStepsRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_V_MAX_STEPS");
+        var defaultMaxSteps = int.TryParse(maxStepsRaw, out var v) ? v : 8;
+        defaultMaxSteps = Math.Clamp(defaultMaxSteps, 1, 50);
+
+        return Normalize(windowKey) switch
+        {
+            "profileeditor" => 3,
+            _ => defaultMaxSteps
+        };
+    }
+
     internal static IReadOnlyList<TestlabTableScanResult>? ScanTablesVerticallyIfNeeded(
         RunContext run,
         string tabName,
@@ -1123,6 +1546,7 @@ public sealed class TestlabAutomationRunner
                     win,
                     entry,
                     fixedProfile,
+                    childWindowProfile: null,
                     maxSteps,
                     pauseMs
                 )
@@ -1141,11 +1565,12 @@ public sealed class TestlabAutomationRunner
         TestlabWindowInfo win,
         TestlabTableEntryResult entry,
         WorkstationProfile? fixedProfile,
+        WorkstationChildWindowProfile? childWindowProfile,
         int maxSteps,
         int pauseMs
     )
     {
-        var context = BuildTableScanContext(run, entry, win, fixedProfile);
+        var context = BuildTableScanContext(run, entry, win, fixedProfile, childWindowProfile);
         PrimeTableScanInteraction(controller, context);
 
         var resetTopStable = ResetTableToTopBeforeScan(
@@ -1196,7 +1621,8 @@ public sealed class TestlabAutomationRunner
         RunContext run,
         TestlabTableEntryResult entry,
         TestlabWindowInfo win,
-        WorkstationProfile? fixedProfile
+        WorkstationProfile? fixedProfile,
+        WorkstationChildWindowProfile? childWindowProfile
     )
     {
         var tableRoiScreen = entry.TableRoiScreen;
@@ -1228,9 +1654,8 @@ public sealed class TestlabAutomationRunner
             Math.Min(18, interactionRoiWindow.Width),
             interactionRoiWindow.Height
         );
-        var topSerialVerifyTarget = fixedProfile?
-            .FindPageProfile(entry.TabName)?
-            .FindVerifyTarget("top_serial");
+        var topSerialVerifyTarget = childWindowProfile?.FindVerifyTarget("top_serial")
+            ?? fixedProfile?.FindPageProfile(entry.TabName)?.FindVerifyTarget("top_serial");
         var topSerialVerifyRoiWindow = topSerialVerifyTarget?.RoiWindow;
         var topSerialVerifySha256 = topSerialVerifyTarget?.Sha256
             ?? fixedProfile?.FindPageProfile(entry.TabName)?.TopSerialVerifySha256;
@@ -1284,7 +1709,7 @@ public sealed class TestlabAutomationRunner
         TestlabTableScanContext context
     )
     {
-        if (ReusePagingPreparation(context.PagingPreparationMode))
+        if (ReusePagingPreparation(context.Entry.TableName, context.PagingPreparationMode))
         {
             return;
         }
@@ -1320,8 +1745,60 @@ public sealed class TestlabAutomationRunner
         );
         chunks.Add(currentChunk);
         var lastStateHash = $"{currentChunk.SerialSha256}:{currentScrollbarHash}";
+        var stepStart = 0;
 
-        for (var step = 0; step < Math.Max(0, maxSteps - 1); step++)
+        if (UsesProbeValidatedStableStart(context.Entry.TableName))
+        {
+            var probeScroll = TryScrollToNextChunk(
+                run,
+                controller,
+                overlay,
+                capturer,
+                screenshots,
+                context,
+                currentChunk.SerialSha256,
+                currentScrollbarHash,
+                step: 0
+            );
+            scrollEvents.Add(probeScroll);
+            if (!probeScroll.Changed)
+            {
+                TestlabDebugMarkers.WritePhase(
+                    "runner.table_start_probe_no_change",
+                    run.RunDirectory,
+                    $"table={context.Entry.TableName};tab={context.Entry.TabName};reason=stable_start_not_scrollable"
+                );
+                return (chunks, scrollEvents);
+            }
+
+            var (probeChunk, probeScrollbarHash) = CaptureTableChunk(
+                run,
+                controller,
+                overlay,
+                capturer,
+                screenshots,
+                context,
+                chunkIndex: chunks.Count
+            );
+            var probeStateHash = $"{probeChunk.SerialSha256}:{probeScrollbarHash}";
+            if (string.Equals(lastStateHash, probeStateHash, StringComparison.OrdinalIgnoreCase))
+            {
+                TestlabDebugMarkers.WritePhase(
+                    "runner.table_start_probe_repeat_state",
+                    run.RunDirectory,
+                    $"table={context.Entry.TableName};tab={context.Entry.TabName};reason=stable_start_repeated_after_probe"
+                );
+                return (chunks, scrollEvents);
+            }
+
+            chunks.Add(probeChunk);
+            currentChunk = probeChunk;
+            currentScrollbarHash = probeScrollbarHash;
+            lastStateHash = probeStateHash;
+            stepStart = 1;
+        }
+
+        for (var step = stepStart; step < Math.Max(0, maxSteps - 1); step++)
         {
             var scroll = TryScrollToNextChunk(
                 run,
@@ -1374,7 +1851,7 @@ public sealed class TestlabAutomationRunner
         int chunkIndex
     )
     {
-        if (!SkipChunkFocusClick(context.PagingPreparationMode))
+        if (!SkipChunkFocusClick(context.Entry.TableName, context.PagingPreparationMode))
         {
             controller.ClickScreenPoint(context.FocusX, context.FocusY);
             Thread.Sleep(60);
@@ -1427,7 +1904,7 @@ public sealed class TestlabAutomationRunner
             return true;
         }
 
-        var reusePreparation = ReusePagingPreparation(context.PagingPreparationMode);
+        var reusePreparation = ReusePagingPreparation(entry.TableName, context.PagingPreparationMode);
         var keyTarget = PrepareTableForPaging(run, controller, context);
 
         var pgUpCount = GetIntEnv("CHECKMIND_TABLE_RESET_TOP_PGUP_COUNT", 10);
@@ -1468,6 +1945,36 @@ public sealed class TestlabAutomationRunner
             }
         }
 
+        bool BootstrapProfileEditorPagingSemantic()
+        {
+            if (!UsesProbeValidatedStableStart(entry.TableName))
+            {
+                return false;
+            }
+
+            var bootstrapBeforeWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
+            var (bootstrapBeforeSerialSha, bootstrapBeforeScrollbarSha) = CaptureResetState(context, bootstrapBeforeWindowBytes);
+
+            DispatchPagingKey(run, controller, entry.TableName, win, context.PagingPreparationMode, keyTarget, pageDown: true, keyDelayMs);
+            pressAttempts++;
+            Thread.Sleep(pagePauseMs);
+
+            var bootstrapAfterWindowBytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
+            var (bootstrapAfterSerialSha, bootstrapAfterScrollbarSha) = CaptureResetState(context, bootstrapAfterWindowBytes);
+            var changed = !string.Equals(bootstrapBeforeSerialSha, bootstrapAfterSerialSha, StringComparison.OrdinalIgnoreCase) ||
+                          !string.Equals(bootstrapBeforeScrollbarSha, bootstrapAfterScrollbarSha, StringComparison.OrdinalIgnoreCase);
+            TestlabDebugMarkers.WritePhase(
+                "runner.table_reset_top_bootstrap_pgdn",
+                run.RunDirectory,
+                $"table={entry.TableName};focus=({context.FocusX},{context.FocusY});serialBefore={bootstrapBeforeSerialSha};serialAfter={bootstrapAfterSerialSha};scrollbarBefore={bootstrapBeforeScrollbarSha};scrollbarAfter={bootstrapAfterScrollbarSha};serialChanged={(!string.Equals(bootstrapBeforeSerialSha, bootstrapAfterSerialSha, StringComparison.OrdinalIgnoreCase) ? 1 : 0)};scrollbarChanged={(!string.Equals(bootstrapBeforeScrollbarSha, bootstrapAfterScrollbarSha, StringComparison.OrdinalIgnoreCase) ? 1 : 0)};keyDelayMs={keyDelayMs};pagePauseMs={pagePauseMs}"
+            );
+
+            currentWindowBytes = bootstrapAfterWindowBytes;
+            currentSerialSha = bootstrapAfterSerialSha;
+            currentScrollbarSha = bootstrapAfterScrollbarSha;
+            return changed;
+        }
+
         bool ProbeTopStable()
         {
             var probeWindowBytes0 = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(context.Window.Hwnd));
@@ -1503,6 +2010,7 @@ public sealed class TestlabAutomationRunner
             return allSame;
         }
 
+        _ = BootstrapProfileEditorPagingSemantic();
         PressPgUpTimes(pgUpCount);
         Thread.Sleep(pagePauseMs);
         reachedTopStable = ProbeTopStable();
@@ -1523,7 +2031,12 @@ public sealed class TestlabAutomationRunner
             entry.TableName,
             context.TopSerialVerifySha256
         );
-        var finalTopReached = reachedTopStable;
+        var hasTopSignature = !string.IsNullOrWhiteSpace(context.TopSerialVerifySha256);
+        var finalTopReached = UsesProbeValidatedStableStart(entry.TableName)
+            ? reachedTopStable
+            : hasTopSignature
+                ? topSignatureMatched
+                : reachedTopStable;
 
         sw.Stop();
         var elapsedMs = sw.ElapsedMilliseconds;
@@ -1651,7 +2164,7 @@ public sealed class TestlabAutomationRunner
                    !string.Equals(scrollbarSha, currentScrollbarSha256, StringComparison.OrdinalIgnoreCase);
         }
 
-        var keyTarget = ReusePagingPreparation(context.PagingPreparationMode)
+        var keyTarget = ReusePagingPreparation(tableName, context.PagingPreparationMode)
             ? context.Window.Hwnd
             : PrepareTableForPaging(run, controller, context);
         DispatchPagingKey(run, controller, tableName, context.Window, context.PagingPreparationMode, keyTarget, pageDown: true, keyDelayMs);
@@ -1689,8 +2202,10 @@ public sealed class TestlabAutomationRunner
     {
         var tableName = context.Entry.TableName;
         var win = context.Window;
-        var singleActivationOnly = UseSingleActivationOnly(context.PagingPreparationMode);
-        var focusClickCount = singleActivationOnly ? 0 : GetIntEnv("CHECKMIND_TABLE_FOCUS_CLICK_COUNT", 2);
+        var singleActivationOnly = UseSingleActivationOnly(tableName, context.PagingPreparationMode);
+        var focusClickCount = singleActivationOnly
+            ? 0
+            : GetFocusClickCount(tableName, context.PagingPreparationMode);
         var focusClickPauseMs = GetIntEnv("CHECKMIND_TABLE_FOCUS_CLICK_PAUSE_MS", 90);
         var focusSettleMs = GetIntEnv("CHECKMIND_TABLE_FOCUS_SETTLE_MS", 220);
         var activationClickCount = GetIntEnv("CHECKMIND_TABLE_ACTIVATION_CLICK_COUNT", 1);
@@ -1929,8 +2444,23 @@ public sealed class TestlabAutomationRunner
         return "mouse_event";
     }
 
-    private static bool ReusePagingPreparation(string? pagingPreparationMode)
+    private static bool RequiresExplicitPagingFocus(string tableName, string? pagingPreparationMode)
     {
+        var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
+        return string.Equals(Normalize(tableName ?? string.Empty), "profileeditortablescan", StringComparison.OrdinalIgnoreCase) &&
+               (modeNorm == "activationforeground" || modeNorm == "foregroundactivation");
+    }
+
+    private static bool UsesProbeValidatedStableStart(string tableName)
+        => string.Equals(Normalize(tableName ?? string.Empty), "profileeditortablescan", StringComparison.OrdinalIgnoreCase);
+
+    private static bool ReusePagingPreparation(string tableName, string? pagingPreparationMode)
+    {
+        if (RequiresExplicitPagingFocus(tableName, pagingPreparationMode))
+        {
+            return false;
+        }
+
         var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
         return modeNorm == "activationforeground" ||
                modeNorm == "foregroundactivation" ||
@@ -1940,18 +2470,42 @@ public sealed class TestlabAutomationRunner
                modeNorm == "notchprofilesendinput";
     }
 
-    private static bool UseSingleActivationOnly(string? pagingPreparationMode)
+    private static bool UseSingleActivationOnly(string tableName, string? pagingPreparationMode)
     {
+        if (RequiresExplicitPagingFocus(tableName, pagingPreparationMode))
+        {
+            return false;
+        }
+
         var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
         return modeNorm == "activationforeground" ||
                modeNorm == "foregroundactivation";
     }
 
-    private static bool SkipChunkFocusClick(string? pagingPreparationMode)
+    private static bool SkipChunkFocusClick(string tableName, string? pagingPreparationMode)
     {
+        if (RequiresExplicitPagingFocus(tableName, pagingPreparationMode))
+        {
+            return false;
+        }
+
         var modeNorm = Normalize(pagingPreparationMode ?? string.Empty);
         return modeNorm == "activationforeground" ||
                modeNorm == "foregroundactivation";
+    }
+
+    private static int GetFocusClickCount(string tableName, string? pagingPreparationMode)
+    {
+        if (RequiresExplicitPagingFocus(tableName, pagingPreparationMode))
+        {
+            // Profile Editor regressions show that a double-click can push the table
+            // into a non-scrollable edit-like state. Keep an explicit focus click, but
+            // narrow it to a single click so the automation matches the validated
+            // manual action more closely.
+            return 1;
+        }
+
+        return GetIntEnv("CHECKMIND_TABLE_FOCUS_CLICK_COUNT", 2);
     }
 
     private static string SanitizePhaseValue(string? value)
@@ -1973,13 +2527,38 @@ public sealed class TestlabAutomationRunner
         return Convert.ToHexString(hash);
     }
 
+    private static string ComputeImageContentSha256Hex(byte[] pngBytes)
+    {
+        using var stream = new MemoryStream(pngBytes, writable: false);
+        var decoder = BitmapDecoder.Create(stream, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnLoad);
+        BitmapSource source = decoder.Frames[0];
+        if (source.Format != PixelFormats.Bgra32)
+        {
+            source = new FormatConvertedBitmap(source, PixelFormats.Bgra32, null, 0);
+        }
+
+        var stride = ((source.PixelWidth * source.Format.BitsPerPixel) + 7) / 8;
+        var pixels = new byte[stride * source.PixelHeight];
+        source.CopyPixels(pixels, stride, 0);
+
+        using var payload = new MemoryStream();
+        using var writer = new BinaryWriter(payload, Encoding.UTF8, leaveOpen: true);
+        writer.Write(source.PixelWidth);
+        writer.Write(source.PixelHeight);
+        writer.Write(stride);
+        writer.Write(pixels);
+        writer.Flush();
+
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(payload.ToArray()));
+    }
+
     private static void WriteCoverage(RunContext run, IReadOnlyList<TestlabTableScanResult> scans)
     {
         var json = JsonSerializer.Serialize(scans, new JsonSerializerOptions { WriteIndented = true });
         File.WriteAllText(Path.Combine(run.RunDirectory, "coverage.json"), json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
-    private static IReadOnlyList<TestlabNotchProfileScanResult>? RunNotchProfilesIfRequested(
+    private static (IReadOnlyList<TestlabNotchProfileScanResult>? Results, TestlabNotchProfileCountMismatchResult? CountMismatch) RunNotchProfilesIfRequested(
         RunContext run,
         WindowController controller,
         ScreenCapture capturer,
@@ -1990,8 +2569,13 @@ public sealed class TestlabAutomationRunner
         var indexes = GetNotchProfileIndexesFromEnv();
         if (indexes.Count == 0)
         {
-            return null;
+            return (null, null);
         }
+
+        var requestedCount = NotchProfileIndexResolver.ResolveCountFromEnvironment();
+        var countDrivenMode = IsNotchProfileCountModeRequested();
+        var requestedTotal = requestedCount ?? indexes.Count;
+        var requestedInputLabel = countDrivenMode ? "Notch Profile Count" : "Notch Profile Indexes";
 
         var profileStore = WorkstationProfileStore.CreateDefault();
         var profile = profileStore.Load();
@@ -2052,6 +2636,17 @@ public sealed class TestlabAutomationRunner
         controller.Activate(defineWindow.Hwnd);
         Thread.Sleep(80);
 
+        VerifyDefineNotchProfilesLayoutOrThrow(
+            run,
+            controller,
+            capturer,
+            screenshots,
+            defineWindow,
+            defineNotchWindow,
+            listTarget,
+            profileStore.ProfilePath
+        );
+
         var fixedProfile = IsFixedCaptureEnabled()
             ? profile
             : null;
@@ -2062,6 +2657,9 @@ public sealed class TestlabAutomationRunner
         var pauseRaw = Environment.GetEnvironmentVariable("CHECKMIND_TABLE_SCAN_PAUSE_MS");
         var pauseMs = int.TryParse(pauseRaw, out var p) ? p : 250;
         pauseMs = Math.Clamp(pauseMs, 80, 2000);
+        TestlabNotchProfileCountMismatchResult? countMismatch = null;
+        int? lastCompletedRowIndex = null;
+        string? lastCompletedSelectionStateSha256 = null;
 
         foreach (var rowIndex in indexes)
         {
@@ -2075,13 +2673,69 @@ public sealed class TestlabAutomationRunner
                 capturer.CaptureWindowPngBytes(defineWindow.Hwnd)
             );
 
-            var opened = automation.OpenChildWindowFromIndexedListEntry(
-                defineWindow,
-                listTarget,
-                rowIndex,
-                childTitleContains,
-                maximizeChildWindow: true
-            );
+            TestlabChildWindowOpenResult opened;
+            try
+            {
+                opened = automation.OpenChildWindowFromIndexedListEntry(
+                    defineWindow,
+                    listTarget,
+                    rowIndex,
+                    childTitleContains,
+                    maximizeChildWindow: true,
+                    capturer: capturer,
+                    requireSelectionChange: lastCompletedRowIndex.HasValue && lastCompletedRowIndex.Value != rowIndex,
+                    previousSelectionStateSha256: lastCompletedSelectionStateSha256,
+                    selectionRetryCount: 1
+                );
+            }
+            catch (ListEntryOutOfRangeException ex)
+            {
+                countMismatch = CreateNotchProfileCountMismatchResult(
+                    requestedTotal,
+                    rowIndex,
+                    results,
+                    $"目标序号 [{rowIndex}] 的行点击点已超出列表 ROI，本次按实际列表数量正常结束。请检查 {requestedInputLabel} 是否填写正确。",
+                    ex.Message
+                );
+                TestlabDebugMarkers.WritePhase(
+                    "runner.notch_profile_count_mismatch",
+                    run.RunDirectory,
+                    $"requested={requestedTotal};completed={results.Count};failedRow={rowIndex};mode=out_of_range;input={requestedInputLabel}"
+                );
+                break;
+            }
+            catch (ListEntrySelectionNotChangedException ex)
+            {
+                countMismatch = CreateNotchProfileCountMismatchResult(
+                    requestedTotal,
+                    rowIndex,
+                    results,
+                    $"目标序号 [{rowIndex}] 点击后未检测到新的有效列表项，本次按实际列表数量正常结束。请检查 {requestedInputLabel} 是否填写正确。",
+                    ex.Message
+                );
+                TestlabDebugMarkers.WritePhase(
+                    "runner.notch_profile_count_mismatch",
+                    run.RunDirectory,
+                    $"requested={requestedTotal};completed={results.Count};failedRow={rowIndex};mode=selection_not_changed;input={requestedInputLabel}"
+                );
+                break;
+            }
+            catch (ListEntryRepeatedSelectionException ex)
+            {
+                countMismatch = CreateNotchProfileCountMismatchResult(
+                    requestedTotal,
+                    rowIndex,
+                    results,
+                    $"目标序号 [{rowIndex}] 连续点击两次后仍停留在上一条有效列表项，本次按实际列表数量正常结束。请检查 {requestedInputLabel} 是否填写正确。",
+                    ex.Message
+                );
+                TestlabDebugMarkers.WritePhase(
+                    "runner.notch_profile_count_mismatch",
+                    run.RunDirectory,
+                    $"requested={requestedTotal};completed={results.Count};failedRow={rowIndex};mode=repeated_selection;input={requestedInputLabel}"
+                );
+                break;
+            }
 
             var notchWindow = childLocator.FindByTitleContains(
                 childTitleContains,
@@ -2116,6 +2770,7 @@ public sealed class TestlabAutomationRunner
                 notchWindow,
                 entry,
                 fixedProfile,
+                childWindowProfile: null,
                 maxSteps,
                 pauseMs
             );
@@ -2172,9 +2827,114 @@ public sealed class TestlabAutomationRunner
                 run.RunDirectory,
                 $"row={rowIndex};chunks={tableScan.Chunks.Count};unique={tableScan.UniqueChunkCount};closed={(childWindowClosed ? 1 : 0)}"
             );
+            lastCompletedRowIndex = rowIndex;
+            lastCompletedSelectionStateSha256 = opened.SelectionStateAfterSha256;
         }
 
-        return results;
+        return (results, countMismatch);
+    }
+
+    private static void VerifyDefineNotchProfilesLayoutOrThrow(
+        RunContext run,
+        WindowController controller,
+        ScreenCapture capturer,
+        ScreenshotStore screenshots,
+        TestlabWindowInfo defineWindow,
+        WorkstationChildWindowProfile defineWindowProfile,
+        WorkstationListNavigationTarget listTarget,
+        string profilePath
+    )
+    {
+        var verifyTarget = defineWindowProfile.FindVerifyTarget("notch_profiles_layout");
+        if (verifyTarget?.RoiWindow is not BBox verifyRoi || string.IsNullOrWhiteSpace(verifyTarget.Sha256))
+        {
+            var reportPathMissing = Path.Combine(run.RunDirectory, "define_notch_profiles_layout_preflight_report.json");
+            var reportMissing = new PreflightCalibrationReport(
+                IsCompliant: false,
+                ProfilePath: profilePath,
+                Tabs: ["Sine Setup"],
+                Failures:
+                [
+                    new PreflightCalibrationFailure(
+                        Key: "notch_profiles_layout_verify_missing",
+                        Message: "缺少 Notch Profiles 列表布局签名，已阻断正式执行。",
+                        Expected: "define_notch_profiles.VerifyTargets.notch_profiles_layout (RoiWindow + Sha256) configured",
+                        Actual: "null",
+                        Suggestion: "请先执行 Notch Profiles 布局签名标定，再重试正式业务链路。"
+                    )
+                ]
+            );
+            File.WriteAllText(reportPathMissing, reportMissing.ToJson(), new UTF8Encoding(false));
+            TestlabDebugMarkers.WritePhase(
+                "runner.notch_profiles_layout_signature_missing",
+                run.RunDirectory,
+                $"report={reportPathMissing}"
+            );
+            throw new PreflightCalibrationGateException("Notch Profiles 布局签名缺失，已阻断正式执行。", reportPathMissing);
+        }
+
+        if (listTarget.FirstRowAnchor is WindowPoint firstRowAnchor)
+        {
+            controller.Activate(defineWindow.Hwnd);
+            Thread.Sleep(80);
+            controller.ClickWindowPoint(defineWindow.Hwnd, firstRowAnchor);
+            Thread.Sleep(180);
+            TestlabDebugMarkers.WritePhase(
+                "runner.notch_profiles_layout_selection_normalized",
+                run.RunDirectory,
+                $"rowPoint=({firstRowAnchor.X},{firstRowAnchor.Y})"
+            );
+        }
+
+        var windowBytes = capturer.CaptureWindowPngBytes(defineWindow.Hwnd);
+        var actualBytes = ImageCropper.TryCropToPngBytes(windowBytes, verifyRoi);
+        if (actualBytes is null || actualBytes.Length == 0)
+        {
+            throw new InvalidOperationException("无法采集 Define notch profiles 布局签名当前帧。");
+        }
+
+        var actualPngBytesSha256 = ComputeSha256Hex(actualBytes);
+        var actualSha256 = ComputeImageContentSha256Hex(actualBytes);
+        var expectedSha256 = verifyTarget.Sha256.Trim();
+        if (string.Equals(actualSha256, expectedSha256, StringComparison.OrdinalIgnoreCase))
+        {
+            TestlabDebugMarkers.WritePhase(
+                "runner.notch_profiles_layout_signature_matched",
+                run.RunDirectory,
+                $"actual={actualSha256};expected={expectedSha256};verifyRoi=({verifyRoi.X},{verifyRoi.Y},{verifyRoi.Width},{verifyRoi.Height})"
+            );
+            return;
+        }
+
+        var windowEvidencePath = screenshots.SaveEvidencePng(run, "define_notch_profiles_layout_window_actual", windowBytes);
+        var evidencePath = screenshots.SaveEvidencePng(run, "define_notch_profiles_layout_signature_actual", actualBytes);
+        var reportPath = Path.Combine(run.RunDirectory, "define_notch_profiles_layout_hash_warning.json");
+        var reportJson = JsonSerializer.Serialize(
+            new
+            {
+                mode = "geometry_gate_with_hash_warning",
+                profilePath,
+                verifyRoi,
+                expectedSha256,
+                actualPixelSha256 = actualSha256,
+                actualPngBytesSha256 = actualPngBytesSha256,
+                evidencePath,
+                windowEvidencePath,
+                note = "Bottom controls ROI captured successfully. Hash drift is recorded as evidence but no longer blocks Notch Profile execution."
+            },
+            new JsonSerializerOptions { WriteIndented = true }
+        );
+        File.WriteAllText(reportPath, reportJson, new UTF8Encoding(false));
+        TestlabDebugMarkers.WritePhase(
+            "runner.notch_profiles_layout_hash_mismatch_ignored",
+            run.RunDirectory,
+            $"actualPixel={actualSha256};actualPngBytes={actualPngBytesSha256};expected={expectedSha256};report={reportPath};evidence={evidencePath};window={windowEvidencePath};verifyRoi=({verifyRoi.X},{verifyRoi.Y},{verifyRoi.Width},{verifyRoi.Height})"
+        );
+        TestlabDebugMarkers.WritePhase(
+            "runner.notch_profiles_layout_geometry_verified",
+            run.RunDirectory,
+            $"mode=geometry_only;verifyRoi=({verifyRoi.X},{verifyRoi.Y},{verifyRoi.Width},{verifyRoi.Height})"
+        );
     }
 
     private static (byte[] WindowBytes, string ScreenshotPath) RestoreSineSetupChannelSafetyParameters(
@@ -2202,15 +2962,26 @@ public sealed class TestlabAutomationRunner
         var settleMs = GetIntEnv("CHECKMIND_SINE_SETUP_CHANNEL_SAFETY_RESTORE_SLEEP_MS", 360);
         Thread.Sleep(settleMs);
 
+        overlay?.SetRect(new BBox(win.Rect.Left, win.Rect.Top, win.Rect.Width, win.Rect.Height));
+        Thread.Sleep(120);
+        var bytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
+
+        if (TryMatchDefineNotchProfilesLayout(profile, bytes, out var actualSha, out var expectedSha))
+        {
+            TestlabDebugMarkers.WritePhase(
+                "runner.sine_setup_channel_safety_restore_failed",
+                run.RunDirectory,
+                $"tab={tabName};source={source};sequence={FormatWindowPointSequence(restoreSequence)};sleepMs={settleMs};reason=still_in_define_notch_profiles_layout;actual={actualSha};expected={expectedSha}"
+            );
+            throw new InvalidOperationException("恢复 `Channel safety parameters` 失败：当前仍停留在 `Define notch profiles` 布局。请先重新标定 `sine_setup_channel_safety_parameters`。");
+        }
+
         TestlabDebugMarkers.WritePhase(
             "runner.sine_setup_channel_safety_restored",
             run.RunDirectory,
             $"tab={tabName};source={source};sequence={FormatWindowPointSequence(restoreSequence)};sleepMs={settleMs}"
         );
 
-        overlay?.SetRect(new BBox(win.Rect.Left, win.Rect.Top, win.Rect.Width, win.Rect.Height));
-        Thread.Sleep(120);
-        var bytes = CaptureWithOverlay(overlay, () => capturer.CaptureWindowPngBytes(win.Hwnd));
         var path = screenshots.SaveEvidencePng(run, $"{evidencePrefix}_{index:00}_sine_setup_channel_safety_restored", bytes);
         return (bytes, path);
     }
@@ -2223,13 +2994,34 @@ public sealed class TestlabAutomationRunner
             return (directSequence, "dialog_action_sequence");
         }
 
-        var defineSequence = profile.FindChildWindowProfile("define_notch_profiles")?.GetOpenClickSequence();
-        if (defineSequence is not null && defineSequence.Length > 0)
+        throw new InvalidOperationException("profile 缺少 `Channel safety parameters` 恢复点击点；请先执行相关标定。");
+    }
+
+    private static bool TryMatchDefineNotchProfilesLayout(
+        WorkstationProfile profile,
+        byte[] windowBytes,
+        out string actualSha,
+        out string expectedSha
+    )
+    {
+        actualSha = string.Empty;
+        expectedSha = string.Empty;
+
+        var verifyTarget = profile.FindChildWindowProfile("define_notch_profiles")?.FindVerifyTarget("notch_profiles_layout");
+        if (verifyTarget?.RoiWindow is not BBox verifyRoiWindow || string.IsNullOrWhiteSpace(verifyTarget.Sha256))
         {
-            return (defineSequence, "define_notch_profiles_open_sequence_fallback");
+            return false;
         }
 
-        throw new InvalidOperationException("profile 缺少 `Channel safety parameters` 恢复点击点；请先执行相关标定。");
+        var verifyBytes = ImageCropper.TryCropToPngBytes(windowBytes, verifyRoiWindow);
+        if (verifyBytes is null || verifyBytes.Length == 0)
+        {
+            return false;
+        }
+
+        actualSha = ComputeImageContentSha256Hex(verifyBytes);
+        expectedSha = verifyTarget.Sha256!;
+        return string.Equals(actualSha, expectedSha, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string FormatWindowPointSequence(IReadOnlyList<WindowPoint> sequence)
@@ -2237,32 +3029,40 @@ public sealed class TestlabAutomationRunner
 
     private static IReadOnlyList<int> GetNotchProfileIndexesFromEnv()
     {
-        var raw = (Environment.GetEnvironmentVariable("CHECKMIND_NOTCH_PROFILE_INDEXES") ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(raw))
+        return NotchProfileIndexResolver.ResolveIndexesFromEnvironment();
+    }
+
+    private static bool IsNotchProfileCountModeRequested()
+    {
+        var rawIndexes = (Environment.GetEnvironmentVariable(NotchProfileIndexResolver.IndexesEnvName) ?? string.Empty).Trim();
+        var rawIndex = (Environment.GetEnvironmentVariable(NotchProfileIndexResolver.IndexEnvName) ?? string.Empty).Trim();
+        var rawCount = (Environment.GetEnvironmentVariable(NotchProfileIndexResolver.CountEnvName) ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(rawCount))
         {
-            raw = (Environment.GetEnvironmentVariable("CHECKMIND_NOTCH_PROFILE_INDEX") ?? string.Empty).Trim();
+            rawCount = (Environment.GetEnvironmentVariable(NotchProfileIndexResolver.TaskFieldName) ?? string.Empty).Trim();
         }
 
-        if (string.IsNullOrWhiteSpace(raw))
-        {
-            return Array.Empty<int>();
-        }
+        return string.IsNullOrWhiteSpace(rawIndexes) &&
+               string.IsNullOrWhiteSpace(rawIndex) &&
+               !string.IsNullOrWhiteSpace(rawCount);
+    }
 
-        var values = new List<int>();
-        foreach (var token in raw.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-        {
-            if (!int.TryParse(token, out var index) || index <= 0)
-            {
-                throw new InvalidOperationException($"非法 Notch Profile 序号：{token}");
-            }
-
-            if (!values.Contains(index))
-            {
-                values.Add(index);
-            }
-        }
-
-        return values;
+    private static TestlabNotchProfileCountMismatchResult CreateNotchProfileCountMismatchResult(
+        int requestedCount,
+        int failedRowIndex,
+        IReadOnlyCollection<TestlabNotchProfileScanResult> completedResults,
+        string userMessage,
+        string detail
+    )
+    {
+        return new TestlabNotchProfileCountMismatchResult(
+            RequestedCount: requestedCount,
+            CompletedCount: completedResults.Count,
+            FailedRowIndex: failedRowIndex,
+            LastCompletedRowIndex: completedResults.Count > 0 ? completedResults.Max(static item => item.TargetRowIndex) : null,
+            UserMessage: userMessage,
+            Detail: detail
+        );
     }
 
     private static IReadOnlyList<TestlabTableScanResult> GetAllTableScans(
@@ -2275,10 +3075,26 @@ public sealed class TestlabAutomationRunner
         {
             if (item.TableScans is null || item.TableScans.Count == 0)
             {
+            }
+            else
+            {
+                scans.AddRange(item.TableScans);
+            }
+
+            if (item.ChildWindowCaptures is null || item.ChildWindowCaptures.Count == 0)
+            {
                 continue;
             }
 
-            scans.AddRange(item.TableScans);
+            foreach (var child in item.ChildWindowCaptures)
+            {
+                if (child.TableScans is null || child.TableScans.Count == 0)
+                {
+                    continue;
+                }
+
+                scans.AddRange(child.TableScans);
+            }
         }
 
         if (notchProfileScans is not null)
@@ -2484,6 +3300,7 @@ public sealed class TestlabAutomationRunner
         var normalizedTable = Normalize(entry.TableName);
         return (normalizedTab == Normalize("Sine Setup") && normalizedTable == Normalize("Channel Parameters Table")) ||
                (normalizedTab == Normalize("Channel Setup") && normalizedTable == Normalize("Channel Setup Table")) ||
+               (normalizedTab == Normalize("Profile Editor") && normalizedTable == Normalize("profileeditor_table_scan")) ||
                (normalizedTab == Normalize("Notch Profile") && normalizedTable.StartsWith(Normalize("Notch Profile Table"), StringComparison.Ordinal));
     }
 
@@ -3744,6 +4561,9 @@ public sealed class TestlabAutomationRunner
         return sb.ToString();
     }
 
+    private static string SanitizeDetail(string? value)
+        => (value ?? string.Empty).Replace('\r', ' ').Replace('\n', ' ').Trim();
+
     private static IOcrAdapter CreateOcrAdapter()
     {
         var mode = Environment.GetEnvironmentVariable("CHECKMIND_OCR_MODE");
@@ -3818,7 +4638,8 @@ public sealed record TestlabRunResult(
     string BeforeMaximizeScreenshotPath,
     string AfterMaximizeScreenshotPath,
     IReadOnlyList<TestlabTabSwitchResult> TabSwitches,
-    IReadOnlyList<TestlabNotchProfileScanResult>? NotchProfileScans = null
+    IReadOnlyList<TestlabNotchProfileScanResult>? NotchProfileScans = null,
+    TestlabNotchProfileCountMismatchResult? NotchProfileCountMismatch = null
 );
 
 public sealed record TestlabTabSwitchResult(
@@ -3830,7 +4651,9 @@ public sealed record TestlabTabSwitchResult(
     IReadOnlyList<TestlabPageRegionResult>? Regions = null,
     BBox? TabsRoiWindow = null,
     IReadOnlyList<TestlabTableEntryResult>? TableEntries = null,
-    IReadOnlyList<TestlabTableScanResult>? TableScans = null
+    IReadOnlyList<TestlabTableScanResult>? TableScans = null,
+    IReadOnlyList<TestlabFixedCaptureResult>? FixedCaptures = null,
+    IReadOnlyList<TestlabChildWindowCaptureResult>? ChildWindowCaptures = null
 );
 
 public sealed record TestlabPageRegionResult(
@@ -3875,6 +4698,27 @@ public sealed record TestlabTableScanChunkResult(
     string SerialSha256
 );
 
+public sealed record TestlabFixedCaptureResult(
+    string Key,
+    string ScreenshotPath,
+    BBox RoiWindow,
+    BBox RoiScreen,
+    string? SourceTabName = null
+);
+
+public sealed record TestlabChildWindowCaptureResult(
+    string WindowKey,
+    string WindowTitleContains,
+    string? OpenedWindowTitle,
+    string? OpenedWindowScreenshotPath,
+    IReadOnlyList<TestlabFixedCaptureResult> Captures,
+    IReadOnlyList<TestlabTableScanResult>? TableScans = null,
+    string? CloseMode = null,
+    bool ChildWindowClosed = false,
+    string? ReturnedToParentScreenshotPath = null,
+    string? ErrorMessage = null
+);
+
 public sealed record TestlabNotchProfileScanResult(
     int TargetRowIndex,
     TestlabChildWindowOpenResult Opened,
@@ -3886,4 +4730,13 @@ public sealed record TestlabNotchProfileScanResult(
     string CloseMode,
     bool ChildWindowClosed,
     string? DefineNotchProfilesAfterCloseScreenshotPath
+);
+
+public sealed record TestlabNotchProfileCountMismatchResult(
+    int RequestedCount,
+    int CompletedCount,
+    int FailedRowIndex,
+    int? LastCompletedRowIndex,
+    string UserMessage,
+    string Detail
 );

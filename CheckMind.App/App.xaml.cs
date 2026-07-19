@@ -122,7 +122,11 @@ public partial class App : System.Windows.Application
                 string? runDirectory = null;
                 try
                 {
-                    var run = new RunStorage().CreateRun(new RunCreateOptions(TrialId: "TESTLAB"));
+                    var taskRequest = TaskContractResolver.ResolveFromEnvironment();
+                    var run = new RunStorage().CreateRun(new RunCreateOptions(
+                        TrialId: "TESTLAB",
+                        TaskRequest: taskRequest
+                    ));
                     runDirectory = run.RunDirectory;
                     TestlabDebugMarkers.SetCurrentRunDirectory(runDirectory);
                     TestlabDebugMarkers.WritePhase("app.dpi_bootstrap", runDirectory, dpiBootstrap);
@@ -198,6 +202,9 @@ public partial class App : System.Windows.Application
                             case "define_notch_profiles":
                                 await new TestlabChildWindowCalibrator().CalibrateDefineNotchProfilesAsync(run);
                                 break;
+                            case "define_notch_profiles_layout_signature":
+                                await new TestlabChildWindowCalibrator().CalibrateDefineNotchProfilesLayoutSignatureAsync(run);
+                                break;
                             case "sine_setup_channel_safety_parameters":
                                 await new TestlabChildWindowCalibrator().CalibrateSineSetupChannelSafetyParametersAsync(run);
                                 break;
@@ -209,6 +216,21 @@ public partial class App : System.Windows.Application
                                 break;
                             case "notch_profile_paging_activation":
                                 await new TestlabChildWindowCalibrator().CalibrateNotchProfilePagingActivationAsync(run);
+                                break;
+                            case "profile_editor":
+                                await new TestlabChildWindowCalibrator().CalibrateProfileEditorAsync(run);
+                                break;
+                            case "profile_editor_paging_focus":
+                                await new TestlabChildWindowCalibrator().CalibrateProfileEditorPagingFocusAsync(run);
+                                break;
+                            case "profile_editor_paging_activation":
+                                await new TestlabChildWindowCalibrator().CalibrateProfileEditorPagingActivationAsync(run);
+                                break;
+                            case "profile_editor_top_signature":
+                                await new TestlabChildWindowCalibrator().CalibrateProfileEditorTopSignatureAsync(run);
+                                break;
+                            case "advanced_control_setup":
+                                await new TestlabChildWindowCalibrator().CalibrateAdvancedControlSetupAsync(run);
                                 break;
                             default:
                                 throw new InvalidOperationException($"暂不支持的子窗口标定 key：{childWindowKey}");
@@ -272,7 +294,8 @@ public partial class App : System.Windows.Application
                     }
 
                     TestlabDebugMarkers.WritePhase("app.before_runner_run", runDirectory);
-                    _ = await Task.Run(() => new TestlabAutomationRunner().Run(run, overlay));
+                    var testlabRunResult = await Task.Run(() => new TestlabAutomationRunner().Run(run, overlay));
+                    new RunResultsStore().SaveTestlabResult(run, taskRequest, testlabRunResult);
                     TestlabDebugMarkers.WritePhase("app.after_runner_run", runDirectory);
                     Environment.ExitCode = 0;
 

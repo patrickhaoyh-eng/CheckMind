@@ -7,7 +7,8 @@ public sealed record RunMeta(
     DateTimeOffset CreatedAtUtc,
     string? TrialId = null,
     string? OperatorName = null,
-    IReadOnlyList<RunInputRef>? Inputs = null
+    IReadOnlyList<RunInputRef>? Inputs = null,
+    TaskCreateRequest? TaskRequest = null
 );
 
 public sealed record RunInputRef(
@@ -18,6 +19,6 @@ public sealed record RunInputRef(
 );
 
 [JsonSourceGenerationOptions(WriteIndented = true)]
+[JsonSerializable(typeof(TaskCreateRequest))]
 [JsonSerializable(typeof(RunMeta))]
 internal partial class RunMetaJsonContext : JsonSerializerContext;
-
