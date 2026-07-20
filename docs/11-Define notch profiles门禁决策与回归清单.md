@@ -44,6 +44,15 @@
 - 模板口径 mismatch：`notchProfileCount=4`
 - 显式索引成功：`NotchProfileIndexes="1,2,3"`
 - 显式索引 mismatch：`NotchProfileIndexes="1,2,3,4"`
+- 上述四个口径已进一步在任务级端到端回归中闭环：
+  - 主口径成功 run `39fb7de04da24e01929548d864b58ec1`
+  - 主口径 mismatch run `a3f132d5fea34a418832f40ce0f6f638`
+  - 显式索引成功 run `947031f4b3184c4097c817baff99260b`
+  - 显式索引 mismatch run `540bacb3c38d42f184bede4feb85334e`
+- 任务级结论：
+  - 第二刀门禁在四个任务级 run 中均未因哈希漂移提前误拦
+  - `row=1/2/3` 的子窗口扫描在成功口径与 mismatch 口径下均保持一致
+  - mismatch 始终落到真实缺失的第 `4` 条，且提示文案分别正确使用 `Notch Profile Count` / `Notch Profile Indexes` 入口口径
 
 ## 7. 端到端回归建议清单
 - 成功路径回归
