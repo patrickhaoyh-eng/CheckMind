@@ -1,6 +1,7 @@
 param(
     [string]$NotchProfileIndexes = "",
-    [int]$NotchProfileCount = 0
+    [int]$NotchProfileCount = 0,
+    [switch]$NoPrompts
 )
 
 $ErrorActionPreference = "Stop"
@@ -9,15 +10,8 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
-$embeddedNoDialogs = (($env:CHECKMIND_EMBEDDED_NO_DIALOGS) + "").Trim()
-$embeddedNoDialogs = $embeddedNoDialogs -eq "1" -or $embeddedNoDialogs -eq "true"
-
-$startConfirmPrompt = (($env:CHECKMIND_START_CONFIRM_PROMPT) + "").Trim()
-if ([string]::IsNullOrWhiteSpace($startConfirmPrompt))
-{
-    $startConfirmPrompt = "1"
-}
-$startConfirmPrompt = $startConfirmPrompt -eq "1" -or $startConfirmPrompt -eq "true"
+$embeddedNoDialogs = $NoPrompts.IsPresent
+$startConfirmPrompt = -not $embeddedNoDialogs
 
 $autoRecalibrateVerify = (($env:CHECKMIND_AUTO_RECALIBRATE_VERIFY_SIGNATURE) + "").Trim()
 if ([string]::IsNullOrWhiteSpace($autoRecalibrateVerify))
@@ -58,6 +52,7 @@ if ([string]::IsNullOrWhiteSpace($env:CHECKMIND_CAPTURE_PROMPT))
 {
     $env:CHECKMIND_CAPTURE_PROMPT = "1"
 }
+$mainRunEmbeddedNoDialogs = $embeddedNoDialogs
 $env:CHECKMIND_TABLE_RESET_TOP_PGUP_COUNT = "10"
 $env:CHECKMIND_TABLE_RESET_TOP_PGUP_RETRY_COUNT = "5"
 $env:CHECKMIND_TABLE_RESET_TOP_STABLE_CONSECUTIVE = "2"
@@ -174,6 +169,308 @@ function Get-RunResult([string]$runDirectory)
     }
 }
 
+function Get-RunResultsSummary([string]$runDirectory)
+{
+    if ([string]::IsNullOrWhiteSpace($runDirectory))
+    {
+        return $null
+    }
+
+    $resultsPath = Join-Path $runDirectory "results.json"
+    if (!(Test-Path $resultsPath))
+    {
+        return $null
+    }
+
+    try
+    {
+        return (Get-Content -LiteralPath $resultsPath -Raw | ConvertFrom-Json)
+    }
+    catch
+    {
+        return $null
+    }
+}
+
+function New-FormalVerificationSummaryArtifact([string]$runDirectory, $results)
+{
+    $taskResult = $null
+    $formalSummary = $null
+    $alerts = @()
+    if ($null -ne $results)
+    {
+        $taskResult = $results.taskResult
+        $formalSummary = $results.formalVerificationSummary
+        if ($null -ne $results.alerts)
+        {
+            foreach ($alert in @($results.alerts))
+            {
+                $alerts += [ordered]@{
+                    severity = (($alert.severity) + "").Trim()
+                    message = (($alert.message) + "").Trim()
+                }
+            }
+        }
+    }
+
+    $failedObjects = @()
+    $failedReasons = @()
+    if ($null -ne $formalSummary)
+    {
+        if ($null -ne $formalSummary.failedObjects)
+        {
+            foreach ($failedObject in @($formalSummary.failedObjects))
+            {
+                $value = ($failedObject + "").Trim()
+                if (-not [string]::IsNullOrWhiteSpace($value))
+                {
+                    $failedObjects += $value
+                }
+            }
+        }
+
+        if ($null -ne $formalSummary.failedReasons)
+        {
+            foreach ($failedReason in @($formalSummary.failedReasons))
+            {
+                $reasonCodes = @()
+                if ($null -ne $failedReason.reasonCodes)
+                {
+                    foreach ($reasonCode in @($failedReason.reasonCodes))
+                    {
+                        $value = ($reasonCode + "").Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($value))
+                        {
+                            $reasonCodes += $value
+                        }
+                    }
+                }
+
+                $reasonMessages = @()
+                if ($null -ne $failedReason.reasonMessages)
+                {
+                    foreach ($reasonMessage in @($failedReason.reasonMessages))
+                    {
+                        $value = ($reasonMessage + "").Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($value))
+                        {
+                            $reasonMessages += $value
+                        }
+                    }
+                }
+
+                $failedReasons += [ordered]@{
+                    objectKey = ((($failedReason.objectKey) + "").Trim())
+                    reasonCodes = $reasonCodes
+                    reasonMessages = $reasonMessages
+                }
+            }
+        }
+    }
+
+    $verificationStatus = "unavailable"
+    if ($null -ne $formalSummary)
+    {
+        if ($formalSummary.allVerified)
+        {
+            $verificationStatus = "passed"
+        }
+        else
+        {
+            $verificationStatus = "failed"
+        }
+    }
+
+    return [ordered]@{
+        schemaVersion = 1
+        runDirectory = $runDirectory
+        runId = if ($null -ne $results) { (($results.runId) + "").Trim() } else { "" }
+        taskResultStatus = if ($null -ne $taskResult) { (($taskResult.status) + "").Trim() } else { "" }
+        requestedNotchProfileCount = if ($null -ne $taskResult) { $taskResult.requestedNotchProfileCount } else { $null }
+        completedNotchProfileCount = if ($null -ne $taskResult) { $taskResult.completedNotchProfileCount } else { $null }
+        taskResultMessage = if ($null -ne $taskResult) { ((($taskResult.message) + "").Trim()) } else { "" }
+        formalVerificationStatus = $verificationStatus
+        allVerified = if ($null -ne $formalSummary) { [bool]$formalSummary.allVerified } else { $null }
+        failedObjects = $failedObjects
+        failedReasons = $failedReasons
+        finalCompareDirectory = if ($null -ne $formalSummary) { ((($formalSummary.finalCompareDirectory) + "").Trim()) } else { "" }
+        alerts = $alerts
+    }
+}
+
+function Write-FormalVerificationSummaryArtifact([string]$runDirectory, $results)
+{
+    if ([string]::IsNullOrWhiteSpace($runDirectory))
+    {
+        return $null
+    }
+
+    $artifactPath = Join-Path $runDirectory "formal_verification_summary.json"
+    $artifact = New-FormalVerificationSummaryArtifact $runDirectory $results
+
+    try
+    {
+        $artifact | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $artifactPath -Encoding UTF8
+        Write-Host ("formal_verification_summary_file=" + $artifactPath)
+        return $artifactPath
+    }
+    catch
+    {
+        Write-Host ("[CheckMind] failed to write formal verification summary file: " + $_.Exception.Message)
+        return $null
+    }
+}
+
+function Write-FormalVerificationSummary([string]$runDirectory, $results)
+{
+    Write-Host "[CheckMind] formal_verification_summary_begin"
+    Write-Host ("run_directory=" + $runDirectory)
+
+    if ($null -eq $results)
+    {
+        Write-Host "[CheckMind] results.json summary unavailable."
+        Write-Host "[CheckMind] formal_verification_summary_end"
+        return
+    }
+
+    $taskResult = $results.taskResult
+    if ($null -ne $taskResult)
+    {
+        $status = ($taskResult.status + "").Trim()
+        if (-not [string]::IsNullOrWhiteSpace($status))
+        {
+            Write-Host ("task_result_status=" + $status)
+        }
+
+        $requestedCount = ""
+        if ($null -ne $taskResult.requestedNotchProfileCount)
+        {
+            $requestedCount = ($taskResult.requestedNotchProfileCount + "")
+        }
+
+        $completedCount = ""
+        if ($null -ne $taskResult.completedNotchProfileCount)
+        {
+            $completedCount = ($taskResult.completedNotchProfileCount + "")
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($requestedCount) -or -not [string]::IsNullOrWhiteSpace($completedCount))
+        {
+            Write-Host ("notch_profile_progress=requested:" + $requestedCount + ";completed:" + $completedCount)
+        }
+    }
+
+    $formalSummary = $results.formalVerificationSummary
+    if ($null -eq $formalSummary)
+    {
+        Write-Host "[CheckMind] formal_verification_summary missing."
+    }
+    elseif ($formalSummary.allVerified)
+    {
+        Write-Host "[CheckMind] formal_verification=passed"
+    }
+    else
+    {
+        Write-Host "[CheckMind] formal_verification=failed"
+
+        $failedObjects = @()
+        if ($null -ne $formalSummary.failedObjects)
+        {
+            foreach ($failedObject in @($formalSummary.failedObjects))
+            {
+                $value = ($failedObject + "").Trim()
+                if (-not [string]::IsNullOrWhiteSpace($value))
+                {
+                    $failedObjects += $value
+                }
+            }
+        }
+
+        if ($failedObjects.Count -gt 0)
+        {
+            Write-Host ("failed_objects=" + ($failedObjects -join ","))
+        }
+
+        if ($null -ne $formalSummary.failedReasons)
+        {
+            foreach ($failedReason in @($formalSummary.failedReasons))
+            {
+                $objectKey = (($failedReason.objectKey) + "").Trim()
+                $reasonMessages = @()
+                if ($null -ne $failedReason.reasonMessages)
+                {
+                    foreach ($reasonMessage in @($failedReason.reasonMessages))
+                    {
+                        $value = ($reasonMessage + "").Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($value))
+                        {
+                            $reasonMessages += $value
+                        }
+                    }
+                }
+
+                if ($reasonMessages.Count -gt 0)
+                {
+                    foreach ($reasonMessage in $reasonMessages)
+                    {
+                        Write-Host ("reason_message[" + $objectKey + "]=" + $reasonMessage)
+                    }
+                }
+                elseif ($null -ne $failedReason.reasonCodes)
+                {
+                    $reasonCodes = @()
+                    foreach ($reasonCode in @($failedReason.reasonCodes))
+                    {
+                        $value = ($reasonCode + "").Trim()
+                        if (-not [string]::IsNullOrWhiteSpace($value))
+                        {
+                            $reasonCodes += $value
+                        }
+                    }
+
+                    if ($reasonCodes.Count -gt 0)
+                    {
+                        Write-Host ("reason_codes[" + $objectKey + "]=" + ($reasonCodes -join ","))
+                    }
+                }
+            }
+        }
+    }
+
+    if ($null -ne $taskResult)
+    {
+        $taskResultMessage = (($taskResult.message) + "").Trim()
+        if (-not [string]::IsNullOrWhiteSpace($taskResultMessage))
+        {
+            Write-Host ("task_result_message=" + $taskResultMessage)
+        }
+    }
+
+    if ($null -ne $results.alerts)
+    {
+        foreach ($alert in @($results.alerts))
+        {
+            $alertSeverity = (($alert.severity) + "").Trim()
+            $alertMessage = (($alert.message) + "").Trim()
+            if (-not [string]::IsNullOrWhiteSpace($alertMessage))
+            {
+                Write-Host ("alert[" + $alertSeverity + "]=" + $alertMessage)
+            }
+        }
+    }
+
+    if ($null -ne $formalSummary)
+    {
+        $finalCompareDirectory = (($formalSummary.finalCompareDirectory) + "").Trim()
+        if (-not [string]::IsNullOrWhiteSpace($finalCompareDirectory))
+        {
+            Write-Host ("final_compare_directory=" + $finalCompareDirectory)
+        }
+    }
+
+    Write-Host "[CheckMind] formal_verification_summary_end"
+}
+
 function Decode-Utf8Base64([string]$value)
 {
     return [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($value))
@@ -211,6 +508,23 @@ function Show-TopMostAlert([string]$message, [string]$caption)
     }
 }
 
+function Set-DialogMode([bool]$suppressDialogs, [bool]$consentPromptEnabled, [bool]$finishedPromptEnabled)
+{
+    if ($suppressDialogs)
+    {
+        $env:CHECKMIND_CAPTURE_PROMPT = "0"
+        $env:CHECKMIND_CAPTURE_CONSENT_PROMPT = "0"
+        $env:CHECKMIND_CAPTURE_FINISHED_PROMPT = "0"
+        $env:CHECKMIND_EMBEDDED_NO_DIALOGS = "1"
+        return
+    }
+
+    $env:CHECKMIND_CAPTURE_PROMPT = "1"
+    $env:CHECKMIND_CAPTURE_CONSENT_PROMPT = $(if ($consentPromptEnabled) { "1" } else { "0" })
+    $env:CHECKMIND_CAPTURE_FINISHED_PROMPT = $(if ($finishedPromptEnabled) { "1" } else { "0" })
+    Remove-Item Env:CHECKMIND_EMBEDDED_NO_DIALOGS -ErrorAction SilentlyContinue
+}
+
 if (-not $embeddedNoDialogs -and $startConfirmPrompt)
 {
     $message = @(
@@ -236,11 +550,9 @@ if (-not $embeddedNoDialogs -and $startConfirmPrompt)
     }
 }
 
-$env:CHECKMIND_CAPTURE_PROMPT = "0"
-$env:CHECKMIND_EMBEDDED_NO_DIALOGS = "1"
-
 if ($autoRecalibrateVerify)
 {
+    Set-DialogMode $true $false $false
     Write-Host "Preflight: recalibrate verify signature (reuse ClickPoint)"
     powershell -ExecutionPolicy Bypass -File (Join-Path $repoRoot "scripts\calibrate_verify_signature_reuse.ps1")
     if ($LASTEXITCODE -ne 0)
@@ -248,6 +560,8 @@ if ($autoRecalibrateVerify)
         exit $LASTEXITCODE
     }
 }
+
+Set-DialogMode $mainRunEmbeddedNoDialogs $false $true
 
 Write-Host ("CHECKMIND_RUNS_ROOT=" + $env:CHECKMIND_RUNS_ROOT)
 Write-Host ("CHECKMIND_WORKSTATION_PROFILE_PATH=" + $env:CHECKMIND_WORKSTATION_PROFILE_PATH)
@@ -262,6 +576,9 @@ else
     Write-Host ("CHECKMIND_NOTCH_PROFILE_INDEXES=" + $env:CHECKMIND_NOTCH_PROFILE_INDEXES)
 }
 Write-Host ("CHECKMIND_CAPTURE_PROMPT=" + $env:CHECKMIND_CAPTURE_PROMPT)
+Write-Host ("CHECKMIND_CAPTURE_CONSENT_PROMPT=" + $env:CHECKMIND_CAPTURE_CONSENT_PROMPT)
+Write-Host ("CHECKMIND_CAPTURE_FINISHED_PROMPT=" + $env:CHECKMIND_CAPTURE_FINISHED_PROMPT)
+Write-Host ("CHECKMIND_EMBEDDED_NO_DIALOGS=" + (($env:CHECKMIND_EMBEDDED_NO_DIALOGS) + ""))
 Write-Host ("CHECKMIND_AUTO_RECALIBRATE_VERIFY_SIGNATURE=" + $autoRecalibrateVerify)
 
 dotnet build -c Release $project
@@ -288,6 +605,9 @@ if (![string]::IsNullOrWhiteSpace($lastRun))
 {
     Write-Host ("last_run=" + $lastRun)
     $runResult = Get-RunResult $lastRun
+    $resultsSummary = Get-RunResultsSummary $lastRun
+    $null = Write-FormalVerificationSummaryArtifact $lastRun $resultsSummary
+    Write-FormalVerificationSummary $lastRun $resultsSummary
     $countMismatch = $null
     if ($null -ne $runResult)
     {
@@ -321,8 +641,15 @@ if (![string]::IsNullOrWhiteSpace($lastRun))
         ) -join "`r`n"
 
         $mismatchCaption = (Decode-Utf8Base64 "Q2hlY2tNaW5kIC0gTm90Y2ggUHJvZmlsZSBDb3VudCDmj5DnpLo=")
-        Write-Host "[CheckMind] Notch Profile Count mismatch dialog should be visible now."
-        Show-TopMostAlert $mismatchMessage $mismatchCaption
+        if ($embeddedNoDialogs)
+        {
+            Write-Host "[CheckMind] mismatch dialog suppressed because -NoPrompts was specified."
+        }
+        else
+        {
+            Write-Host "[CheckMind] Notch Profile Count mismatch dialog should be visible now."
+            Show-TopMostAlert $mismatchMessage $mismatchCaption
+        }
     }
 
     if (-not $embeddedNoDialogs)
