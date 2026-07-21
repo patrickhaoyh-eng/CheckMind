@@ -1,0 +1,261 @@
+{
+  "objectKey": "profileEditor",
+  "sourceRunId": "01bc27ae8d7a44878bdfd372da7ed334",
+  "sourceTaskType": "sine",
+  "sourceScreenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+  "mappingStatus": "mapped",
+  "reviewStatus": "pending_review",
+  "rows": [
+    {
+      "rowIndex": 1,
+      "rowKey": "profile_editor_row_1",
+      "rowEvidenceRef": {
+        "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+        "bbox": {
+          "x": 0,
+          "y": 0,
+          "width": 0,
+          "height": 0
+        },
+        "rowIndex": 1,
+        "sourceType": "stitched"
+      },
+      "cells": [
+        {
+          "columnIndex": 1,
+          "fieldKey": "serial_number",
+          "fieldLabelRaw": "Serial Number",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": null,
+          "normalizedUnit": null,
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 1,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "fieldKey mapped from first confirmed column",
+            "serial number has no explicit unit"
+          ]
+        },
+        {
+          "columnIndex": 2,
+          "fieldKey": "frequency",
+          "fieldLabelRaw": "Frequency (Hz)",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": "Hz",
+          "normalizedUnit": "Hz",
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 2,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "unit defined by column header",
+            "fieldKey excludes unit suffix"
+          ]
+        },
+        {
+          "columnIndex": 3,
+          "fieldKey": "acceleration",
+          "fieldLabelRaw": "Acceleration (g)",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": "g",
+          "normalizedUnit": "g",
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 3,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "unit defined by column header",
+            "placeholder only until real crop coordinates are confirmed"
+          ]
+        },
+        {
+          "columnIndex": 4,
+          "fieldKey": "velocity",
+          "fieldLabelRaw": "Velocity (m/s)",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": "m/s",
+          "normalizedUnit": "m/s",
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 4,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "unit defined by column header",
+            "currently not in key comparison set"
+          ]
+        },
+        {
+          "columnIndex": 5,
+          "fieldKey": "displacement",
+          "fieldLabelRaw": "Displacement (mm)",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": "mm",
+          "normalizedUnit": "mm",
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 5,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "unit defined by column header",
+            "included in key comparison set"
+          ]
+        },
+        {
+          "columnIndex": 6,
+          "fieldKey": "upper_alarm",
+          "fieldLabelRaw": "Upper Alarm (dB)",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": "dB",
+          "normalizedUnit": "dB",
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 6,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "threshold field",
+            "included in key comparison set"
+          ]
+        },
+        {
+          "columnIndex": 7,
+          "fieldKey": "lower_alarm",
+          "fieldLabelRaw": "Lower Alarm (dB)",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": "dB",
+          "normalizedUnit": "dB",
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 7,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "threshold field",
+            "included in key comparison set"
+          ]
+        },
+        {
+          "columnIndex": 8,
+          "fieldKey": "upper_abort",
+          "fieldLabelRaw": "Upper Abort (dB)",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": "dB",
+          "normalizedUnit": "dB",
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 8,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "threshold field",
+            "currently not in key comparison set"
+          ]
+        },
+        {
+          "columnIndex": 9,
+          "fieldKey": "lower_abort",
+          "fieldLabelRaw": "Lower Abort (dB)",
+          "rawText": "<raw_text_from_crop>",
+          "normalizedValue": "<normalized_value>",
+          "rawUnit": "dB",
+          "normalizedUnit": "dB",
+          "reviewStatus": "pending_review",
+          "evidenceRef": {
+            "screenshotPath": "artifacts/probe-runs/01bc27ae8d7a44878bdfd372da7ed334/screenshots/final_compare/testlab_table_profileeditortablescan_stitched.png",
+            "bbox": {
+              "x": 0,
+              "y": 0,
+              "width": 0,
+              "height": 0
+            },
+            "rowIndex": 1,
+            "columnIndex": 9,
+            "sourceType": "stitched"
+          },
+          "normalizationNotes": [
+            "threshold field",
+            "currently not in key comparison set"
+          ]
+        }
+      ]
+    }
+  ]
+}
