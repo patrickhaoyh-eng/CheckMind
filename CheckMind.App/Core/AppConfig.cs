@@ -22,5 +22,6 @@ internal partial class AppConfigJsonContext : JsonSerializerContext;
 
 public sealed record AutomationUiConfig(
     bool OverlayEnabled = false,
-    bool SuppressMouseCapturePrompt = false
+    bool SuppressMouseCapturePrompt = false,
+    bool SuppressCaptureFinishedPrompt = false
 );

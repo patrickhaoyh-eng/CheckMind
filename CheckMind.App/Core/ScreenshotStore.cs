@@ -37,4 +37,15 @@ public sealed class ScreenshotStore
     {
         return SavePng(run, Path.Combine("debug", screenshotId), pngBytes);
     }
+
+    public string SaveFinalComparePng(RunContext run, string fileName, byte[] pngBytes)
+    {
+        return SaveBytes(run, Path.Combine("final_compare", fileName), pngBytes);
+    }
+
+    public string SaveFinalCompareCopy(RunContext run, string sourcePath)
+    {
+        var fileName = Path.GetFileName(sourcePath);
+        return SaveFinalComparePng(run, fileName, File.ReadAllBytes(sourcePath));
+    }
 }

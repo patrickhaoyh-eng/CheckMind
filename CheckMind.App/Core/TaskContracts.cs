@@ -38,7 +38,72 @@ public sealed record RunResults(
     [property: JsonPropertyName("generatedAtUtc")] DateTimeOffset GeneratedAtUtc,
     [property: JsonPropertyName("taskRequest")] TaskCreateRequest? TaskRequest = null,
     [property: JsonPropertyName("taskResult")] TaskExecutionResult? TaskResult = null,
-    [property: JsonPropertyName("alerts")] IReadOnlyList<TaskAlert>? Alerts = null
+    [property: JsonPropertyName("alerts")] IReadOnlyList<TaskAlert>? Alerts = null,
+    [property: JsonPropertyName("formalVerificationSummary")] TaskFormalVerificationSummary? FormalVerificationSummary = null
+);
+
+public sealed record TaskFormalVerificationSummary(
+    [property: JsonPropertyName("allVerified")] bool AllVerified,
+    [property: JsonPropertyName("failedObjects")] IReadOnlyList<string>? FailedObjects = null,
+    [property: JsonPropertyName("failedReasons")] IReadOnlyList<TaskFormalFailureReason>? FailedReasons = null,
+    [property: JsonPropertyName("finalCompareDirectory")] string? FinalCompareDirectory = null,
+    [property: JsonPropertyName("channelSetup")] ChannelSetupVerificationSummary? ChannelSetup = null,
+    [property: JsonPropertyName("sineSetup")] SineSetupVerificationSummary? SineSetup = null,
+    [property: JsonPropertyName("advancedControlSetup")] AdvancedControlSetupVerificationSummary? AdvancedControlSetup = null,
+    [property: JsonPropertyName("notchProfiles")] NotchProfilesVerificationSummary? NotchProfiles = null,
+    [property: JsonPropertyName("profileEditor")] ProfileEditorVerificationSummary? ProfileEditor = null
+);
+
+public sealed record TaskFormalFailureReason(
+    [property: JsonPropertyName("objectKey")] string ObjectKey,
+    [property: JsonPropertyName("reasonCodes")] IReadOnlyList<string> ReasonCodes,
+    [property: JsonPropertyName("reasonMessages")] IReadOnlyList<string>? ReasonMessages = null
+);
+
+public sealed record ChannelSetupVerificationSummary(
+    [property: JsonPropertyName("verified")] bool Verified,
+    [property: JsonPropertyName("uniqueChunkCount")] int UniqueChunkCount,
+    [property: JsonPropertyName("finalCompareScreenshotPath")] string? FinalCompareScreenshotPath
+);
+
+public sealed record SineSetupVerificationSummary(
+    [property: JsonPropertyName("verified")] bool Verified,
+    [property: JsonPropertyName("channelParametersUniqueChunkCount")] int ChannelParametersUniqueChunkCount,
+    [property: JsonPropertyName("channelParametersFinalCompareScreenshotPath")] string? ChannelParametersFinalCompareScreenshotPath,
+    [property: JsonPropertyName("controlPanelFinalCompareScreenshotPath")] string? ControlPanelFinalCompareScreenshotPath
+);
+
+public sealed record AdvancedControlSetupVerificationSummary(
+    [property: JsonPropertyName("verified")] bool Verified,
+    [property: JsonPropertyName("measurementsFinalCompareScreenshotPath")] string? MeasurementsFinalCompareScreenshotPath,
+    [property: JsonPropertyName("safetyFinalCompareScreenshotPath")] string? SafetyFinalCompareScreenshotPath,
+    [property: JsonPropertyName("throughputRecordingFinalCompareScreenshotPath")] string? ThroughputRecordingFinalCompareScreenshotPath,
+    [property: JsonPropertyName("childWindowClosed")] bool ChildWindowClosed,
+    [property: JsonPropertyName("returnedToParent")] bool ReturnedToParent
+);
+
+public sealed record NotchProfileRowVerificationSummary(
+    [property: JsonPropertyName("targetRowIndex")] int TargetRowIndex,
+    [property: JsonPropertyName("verified")] bool Verified,
+    [property: JsonPropertyName("uniqueChunkCount")] int UniqueChunkCount,
+    [property: JsonPropertyName("finalCompareScreenshotPath")] string? FinalCompareScreenshotPath
+);
+
+public sealed record NotchProfilesVerificationSummary(
+    [property: JsonPropertyName("verified")] bool Verified,
+    [property: JsonPropertyName("countMatched")] bool CountMatched,
+    [property: JsonPropertyName("requestedRowCount")] int RequestedRowCount,
+    [property: JsonPropertyName("completedRowCount")] int CompletedRowCount,
+    [property: JsonPropertyName("failedRowIndex")] int? FailedRowIndex,
+    [property: JsonPropertyName("rows")] IReadOnlyList<NotchProfileRowVerificationSummary>? Rows
+);
+
+public sealed record ProfileEditorVerificationSummary(
+    [property: JsonPropertyName("verified")] bool Verified,
+    [property: JsonPropertyName("uniqueChunkCount")] int UniqueChunkCount,
+    [property: JsonPropertyName("finalCompareScreenshotPath")] string? FinalCompareScreenshotPath,
+    [property: JsonPropertyName("childWindowClosed")] bool ChildWindowClosed,
+    [property: JsonPropertyName("returnedToParent")] bool ReturnedToParent
 );
 
 public static class TaskContractResolver
@@ -72,4 +137,12 @@ public static class TaskContractResolver
 [JsonSerializable(typeof(TaskExecutionResult))]
 [JsonSerializable(typeof(TaskAlert))]
 [JsonSerializable(typeof(RunResults))]
+[JsonSerializable(typeof(TaskFormalVerificationSummary))]
+[JsonSerializable(typeof(TaskFormalFailureReason))]
+[JsonSerializable(typeof(ChannelSetupVerificationSummary))]
+[JsonSerializable(typeof(SineSetupVerificationSummary))]
+[JsonSerializable(typeof(AdvancedControlSetupVerificationSummary))]
+[JsonSerializable(typeof(NotchProfileRowVerificationSummary))]
+[JsonSerializable(typeof(NotchProfilesVerificationSummary))]
+[JsonSerializable(typeof(ProfileEditorVerificationSummary))]
 internal partial class RunResultsJsonContext : JsonSerializerContext;

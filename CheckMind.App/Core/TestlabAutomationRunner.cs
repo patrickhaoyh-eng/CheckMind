@@ -112,6 +112,7 @@ public sealed class TestlabAutomationRunner
 
             var (notchProfileScans, notchProfileCountMismatch) = RunNotchProfilesIfRequested(run, controller, capturer, screenshots, overlay);
             var result = new TestlabRunResult(beforePath, afterPath, switches, notchProfileScans, notchProfileCountMismatch);
+            result = EnrichFormalOutputs(run, screenshots, result);
             WriteCoverage(run, GetAllTableScans(switches, notchProfileScans));
             TestlabDebugMarkers.WritePhase("runner.before_write_run_result", run.RunDirectory);
             WriteRunResult(run, result);
@@ -4625,6 +4626,398 @@ public sealed class TestlabAutomationRunner
         File.WriteAllText(Path.Combine(run.RunDirectory, "testlab_window.json"), json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
     }
 
+    private static TestlabRunResult EnrichFormalOutputs(
+        RunContext run,
+        ScreenshotStore screenshots,
+        TestlabRunResult result)
+    {
+        var finalCompareArtifacts = CollectFinalCompareArtifacts(run, screenshots, result);
+        var channelSetupFormalResult = BuildChannelSetupFormalResult(result, finalCompareArtifacts);
+        var sineSetupFormalResult = BuildSineSetupFormalResult(result, finalCompareArtifacts);
+        var advancedControlSetupFormalResult = BuildAdvancedControlSetupFormalResult(result, finalCompareArtifacts);
+        var notchProfilesFormalResult = BuildNotchProfilesFormalResult(result, finalCompareArtifacts);
+        var profileEditorFormalResult = BuildProfileEditorFormalResult(result, finalCompareArtifacts);
+
+        return result with
+        {
+            FinalCompareDirectory = Path.Combine(run.ScreenshotsDirectory, "final_compare"),
+            FinalCompareArtifacts = finalCompareArtifacts,
+            ChannelSetupFormalResult = channelSetupFormalResult,
+            SineSetupFormalResult = sineSetupFormalResult,
+            AdvancedControlSetupFormalResult = advancedControlSetupFormalResult,
+            NotchProfilesFormalResult = notchProfilesFormalResult,
+            ProfileEditorFormalResult = profileEditorFormalResult
+        };
+    }
+
+    private static IReadOnlyList<TestlabFinalCompareArtifactResult> CollectFinalCompareArtifacts(
+        RunContext run,
+        ScreenshotStore screenshots,
+        TestlabRunResult result)
+    {
+        var artifacts = new List<TestlabFinalCompareArtifactResult>();
+
+        void TryAdd(
+            string key,
+            string? sourcePath,
+            string sourceType,
+            string? sourceTabName = null,
+            string? sourceWindowKey = null,
+            int? notchProfileRowIndex = null)
+        {
+            if (string.IsNullOrWhiteSpace(sourcePath) || !File.Exists(sourcePath))
+            {
+                return;
+            }
+
+            var finalComparePath = screenshots.SaveFinalCompareCopy(run, sourcePath);
+            artifacts.Add(
+                new TestlabFinalCompareArtifactResult(
+                    Key: key,
+                    FileName: Path.GetFileName(finalComparePath),
+                    Path: finalComparePath,
+                    SourceType: sourceType,
+                    SourceTabName: sourceTabName,
+                    SourceWindowKey: sourceWindowKey,
+                    NotchProfileRowIndex: notchProfileRowIndex
+                )
+            );
+        }
+
+        var channelSetup = FindTabSwitch(result, "Channel Setup");
+        var sineSetup = FindTabSwitch(result, "Sine Setup");
+        var profileEditor = FindChildWindowCapture(sineSetup, "profile_editor");
+        var advancedControlSetup = FindChildWindowCapture(sineSetup, "advanced_control_setup");
+
+        TryAdd(
+            "channel_setup_stitched",
+            FindTableScan(channelSetup?.TableScans, "Channel Setup Table")?.StitchedScreenshotPath,
+            sourceType: "table_scan_stitched",
+            sourceTabName: "Channel Setup"
+        );
+        TryAdd(
+            "channel_parameters_stitched",
+            FindTableScan(sineSetup?.TableScans, "Channel Parameters Table")?.StitchedScreenshotPath,
+            sourceType: "table_scan_stitched",
+            sourceTabName: "Sine Setup"
+        );
+        TryAdd(
+            "profile_editor_stitched",
+            FindTableScan(profileEditor?.TableScans, "profileeditor_table_scan")?.StitchedScreenshotPath,
+            sourceType: "child_window_table_scan_stitched",
+            sourceTabName: "Sine Setup",
+            sourceWindowKey: "profile_editor"
+        );
+        TryAdd(
+            "sine_setup_control_panel",
+            FindFixedCapture(sineSetup?.FixedCaptures, "control_panel")?.ScreenshotPath,
+            sourceType: "fixed_capture",
+            sourceTabName: "Sine Setup"
+        );
+        TryAdd(
+            "advanced_control_setup_measurements",
+            FindFixedCapture(advancedControlSetup?.Captures, "measurements")?.ScreenshotPath,
+            sourceType: "child_window_fixed_capture",
+            sourceTabName: "Sine Setup",
+            sourceWindowKey: "advanced_control_setup"
+        );
+        TryAdd(
+            "advanced_control_setup_safety",
+            FindFixedCapture(advancedControlSetup?.Captures, "safety")?.ScreenshotPath,
+            sourceType: "child_window_fixed_capture",
+            sourceTabName: "Sine Setup",
+            sourceWindowKey: "advanced_control_setup"
+        );
+        TryAdd(
+            "advanced_control_setup_throughput_recording",
+            FindFixedCapture(advancedControlSetup?.Captures, "throughput_recording")?.ScreenshotPath,
+            sourceType: "child_window_fixed_capture",
+            sourceTabName: "Sine Setup",
+            sourceWindowKey: "advanced_control_setup"
+        );
+
+        foreach (var notchProfileScan in result.NotchProfileScans ?? [])
+        {
+            TryAdd(
+                $"notch_profile_{notchProfileScan.TargetRowIndex:00}_stitched",
+                notchProfileScan.TableScan.StitchedScreenshotPath,
+                sourceType: "notch_profile_table_scan_stitched",
+                sourceTabName: "Notch Profile",
+                sourceWindowKey: "notch_profile",
+                notchProfileRowIndex: notchProfileScan.TargetRowIndex
+            );
+        }
+
+        return artifacts;
+    }
+
+    private static TestlabProfileEditorFormalResult? BuildProfileEditorFormalResult(
+        TestlabRunResult result,
+        IReadOnlyList<TestlabFinalCompareArtifactResult> finalCompareArtifacts)
+    {
+        var sineSetup = FindTabSwitch(result, "Sine Setup");
+        var profileEditor = FindChildWindowCapture(sineSetup, "profile_editor");
+        if (profileEditor is null)
+        {
+            return null;
+        }
+
+        var tableScan = FindTableScan(profileEditor.TableScans, "profileeditor_table_scan");
+        var chunkCount = tableScan?.Chunks.Count ?? 0;
+        var uniqueChunkCount = tableScan?.UniqueChunkCount ?? 0;
+        var returnedToParent = !string.IsNullOrWhiteSpace(profileEditor.ReturnedToParentScreenshotPath);
+        var finalCompareScreenshotPath = finalCompareArtifacts
+            .FirstOrDefault(static item => item.Key == "profile_editor_stitched")
+            ?.Path;
+        var flowVerified =
+            !string.IsNullOrWhiteSpace(profileEditor.OpenedWindowTitle) &&
+            chunkCount == 3 &&
+            uniqueChunkCount == 3 &&
+            !string.IsNullOrWhiteSpace(tableScan?.StitchedScreenshotPath) &&
+            profileEditor.ChildWindowClosed &&
+            returnedToParent &&
+            string.IsNullOrWhiteSpace(profileEditor.ErrorMessage);
+
+        return new TestlabProfileEditorFormalResult(
+            WindowOpened: !string.IsNullOrWhiteSpace(profileEditor.OpenedWindowTitle),
+            OpenedWindowTitle: profileEditor.OpenedWindowTitle,
+            ChunkCount: chunkCount,
+            UniqueChunkCount: uniqueChunkCount,
+            StitchedScreenshotPath: tableScan?.StitchedScreenshotPath,
+            FinalCompareScreenshotPath: finalCompareScreenshotPath,
+            ChildWindowClosed: profileEditor.ChildWindowClosed,
+            ReturnedToParent: returnedToParent,
+            ReturnedToParentScreenshotPath: profileEditor.ReturnedToParentScreenshotPath,
+            ErrorMessage: profileEditor.ErrorMessage,
+            FlowVerified: flowVerified
+        );
+    }
+
+    private static TestlabChannelSetupFormalResult? BuildChannelSetupFormalResult(
+        TestlabRunResult result,
+        IReadOnlyList<TestlabFinalCompareArtifactResult> finalCompareArtifacts)
+    {
+        var channelSetup = FindTabSwitch(result, "Channel Setup");
+        var tableScan = FindTableScan(channelSetup?.TableScans, "Channel Setup Table");
+        if (channelSetup is null || tableScan is null)
+        {
+            return null;
+        }
+
+        var finalCompareScreenshotPath = FindFinalCompareArtifactPath(finalCompareArtifacts, "channel_setup_stitched");
+        var flowVerified =
+            tableScan.Chunks.Count > 0 &&
+            tableScan.UniqueChunkCount > 0 &&
+            !string.IsNullOrWhiteSpace(tableScan.StitchedScreenshotPath) &&
+            !string.IsNullOrWhiteSpace(finalCompareScreenshotPath);
+
+        return new TestlabChannelSetupFormalResult(
+            ChunkCount: tableScan.Chunks.Count,
+            UniqueChunkCount: tableScan.UniqueChunkCount,
+            StitchedScreenshotPath: tableScan.StitchedScreenshotPath,
+            FinalCompareScreenshotPath: finalCompareScreenshotPath,
+            FlowVerified: flowVerified
+        );
+    }
+
+    private static TestlabSineSetupFormalResult? BuildSineSetupFormalResult(
+        TestlabRunResult result,
+        IReadOnlyList<TestlabFinalCompareArtifactResult> finalCompareArtifacts)
+    {
+        var sineSetup = FindTabSwitch(result, "Sine Setup");
+        var tableScan = FindTableScan(sineSetup?.TableScans, "Channel Parameters Table");
+        if (sineSetup is null || tableScan is null)
+        {
+            return null;
+        }
+
+        var channelParametersFinalCompareScreenshotPath = FindFinalCompareArtifactPath(finalCompareArtifacts, "channel_parameters_stitched");
+        var controlPanelFinalCompareScreenshotPath = FindFinalCompareArtifactPath(finalCompareArtifacts, "sine_setup_control_panel");
+        var flowVerified =
+            tableScan.Chunks.Count > 0 &&
+            tableScan.UniqueChunkCount > 0 &&
+            !string.IsNullOrWhiteSpace(channelParametersFinalCompareScreenshotPath) &&
+            !string.IsNullOrWhiteSpace(controlPanelFinalCompareScreenshotPath);
+
+        return new TestlabSineSetupFormalResult(
+            ChannelParametersChunkCount: tableScan.Chunks.Count,
+            ChannelParametersUniqueChunkCount: tableScan.UniqueChunkCount,
+            ChannelParametersStitchedScreenshotPath: tableScan.StitchedScreenshotPath,
+            ChannelParametersFinalCompareScreenshotPath: channelParametersFinalCompareScreenshotPath,
+            ControlPanelFinalCompareScreenshotPath: controlPanelFinalCompareScreenshotPath,
+            FlowVerified: flowVerified
+        );
+    }
+
+    private static TestlabAdvancedControlSetupFormalResult? BuildAdvancedControlSetupFormalResult(
+        TestlabRunResult result,
+        IReadOnlyList<TestlabFinalCompareArtifactResult> finalCompareArtifacts)
+    {
+        var sineSetup = FindTabSwitch(result, "Sine Setup");
+        var advancedControlSetup = FindChildWindowCapture(sineSetup, "advanced_control_setup");
+        if (advancedControlSetup is null)
+        {
+            return null;
+        }
+
+        var measurementsPath = FindFinalCompareArtifactPath(finalCompareArtifacts, "advanced_control_setup_measurements");
+        var safetyPath = FindFinalCompareArtifactPath(finalCompareArtifacts, "advanced_control_setup_safety");
+        var throughputRecordingPath = FindFinalCompareArtifactPath(finalCompareArtifacts, "advanced_control_setup_throughput_recording");
+        var flowVerified =
+            !string.IsNullOrWhiteSpace(advancedControlSetup.OpenedWindowTitle) &&
+            advancedControlSetup.ChildWindowClosed &&
+            !string.IsNullOrWhiteSpace(advancedControlSetup.ReturnedToParentScreenshotPath) &&
+            string.IsNullOrWhiteSpace(advancedControlSetup.ErrorMessage) &&
+            !string.IsNullOrWhiteSpace(measurementsPath) &&
+            !string.IsNullOrWhiteSpace(safetyPath) &&
+            !string.IsNullOrWhiteSpace(throughputRecordingPath);
+
+        return new TestlabAdvancedControlSetupFormalResult(
+            WindowOpened: !string.IsNullOrWhiteSpace(advancedControlSetup.OpenedWindowTitle),
+            OpenedWindowTitle: advancedControlSetup.OpenedWindowTitle,
+            MeasurementsFinalCompareScreenshotPath: measurementsPath,
+            SafetyFinalCompareScreenshotPath: safetyPath,
+            ThroughputRecordingFinalCompareScreenshotPath: throughputRecordingPath,
+            ChildWindowClosed: advancedControlSetup.ChildWindowClosed,
+            ReturnedToParent: !string.IsNullOrWhiteSpace(advancedControlSetup.ReturnedToParentScreenshotPath),
+            ReturnedToParentScreenshotPath: advancedControlSetup.ReturnedToParentScreenshotPath,
+            ErrorMessage: advancedControlSetup.ErrorMessage,
+            FlowVerified: flowVerified
+        );
+    }
+
+    private static TestlabNotchProfilesFormalResult? BuildNotchProfilesFormalResult(
+        TestlabRunResult result,
+        IReadOnlyList<TestlabFinalCompareArtifactResult> finalCompareArtifacts)
+    {
+        var scans = result.NotchProfileScans ?? [];
+        if (scans.Count == 0 && result.NotchProfileCountMismatch is null)
+        {
+            return null;
+        }
+
+        var rowResults = new List<TestlabNotchProfileRowFormalResult>();
+        foreach (var scan in scans)
+        {
+            var finalCompareScreenshotPath = FindFinalCompareArtifactPath(
+                finalCompareArtifacts,
+                $"notch_profile_{scan.TargetRowIndex:00}_stitched");
+            var rowFlowVerified =
+                scan.TableScan.Chunks.Count > 0 &&
+                scan.TableScan.UniqueChunkCount > 0 &&
+                !string.IsNullOrWhiteSpace(scan.TableScan.StitchedScreenshotPath) &&
+                !string.IsNullOrWhiteSpace(finalCompareScreenshotPath) &&
+                scan.ChildWindowClosed;
+
+            rowResults.Add(
+                new TestlabNotchProfileRowFormalResult(
+                    TargetRowIndex: scan.TargetRowIndex,
+                    ChunkCount: scan.TableScan.Chunks.Count,
+                    UniqueChunkCount: scan.TableScan.UniqueChunkCount,
+                    StitchedScreenshotPath: scan.TableScan.StitchedScreenshotPath,
+                    FinalCompareScreenshotPath: finalCompareScreenshotPath,
+                    ChildWindowClosed: scan.ChildWindowClosed,
+                    FlowVerified: rowFlowVerified
+                )
+            );
+        }
+
+        var requestedRowCount = result.NotchProfileCountMismatch?.RequestedCount ?? scans.Count;
+        var countMatched = result.NotchProfileCountMismatch is null;
+        var flowVerified = rowResults.Count > 0 && rowResults.All(static item => item.FlowVerified);
+
+        return new TestlabNotchProfilesFormalResult(
+            RequestedRowCount: requestedRowCount,
+            CompletedRowCount: scans.Count,
+            CountMatched: countMatched,
+            FailedRowIndex: result.NotchProfileCountMismatch?.FailedRowIndex,
+            Rows: rowResults,
+            FlowVerified: flowVerified
+        );
+    }
+
+    private static TestlabTabSwitchResult? FindTabSwitch(TestlabRunResult result, string tabName)
+    {
+        foreach (var item in result.TabSwitches)
+        {
+            if (Normalize(item.TabName) == Normalize(tabName))
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    private static TestlabChildWindowCaptureResult? FindChildWindowCapture(TestlabTabSwitchResult? tabSwitch, string windowKey)
+    {
+        if (tabSwitch?.ChildWindowCaptures is null)
+        {
+            return null;
+        }
+
+        foreach (var item in tabSwitch.ChildWindowCaptures)
+        {
+            if (Normalize(item.WindowKey) == Normalize(windowKey))
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    private static TestlabTableScanResult? FindTableScan(IReadOnlyList<TestlabTableScanResult>? scans, string tableName)
+    {
+        if (scans is null)
+        {
+            return null;
+        }
+
+        foreach (var item in scans)
+        {
+            if (Normalize(item.TableName) == Normalize(tableName))
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    private static TestlabFixedCaptureResult? FindFixedCapture(IReadOnlyList<TestlabFixedCaptureResult>? captures, string key)
+    {
+        if (captures is null)
+        {
+            return null;
+        }
+
+        foreach (var item in captures)
+        {
+            if (Normalize(item.Key) == Normalize(key))
+            {
+                return item;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FindFinalCompareArtifactPath(
+        IReadOnlyList<TestlabFinalCompareArtifactResult> artifacts,
+        string key)
+    {
+        foreach (var item in artifacts)
+        {
+            if (Normalize(item.Key) == Normalize(key))
+            {
+                return item.Path;
+            }
+        }
+
+        return null;
+    }
+
     private static void WriteRunResult(RunContext run, TestlabRunResult result)
     {
         var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
@@ -4639,7 +5032,14 @@ public sealed record TestlabRunResult(
     string AfterMaximizeScreenshotPath,
     IReadOnlyList<TestlabTabSwitchResult> TabSwitches,
     IReadOnlyList<TestlabNotchProfileScanResult>? NotchProfileScans = null,
-    TestlabNotchProfileCountMismatchResult? NotchProfileCountMismatch = null
+    TestlabNotchProfileCountMismatchResult? NotchProfileCountMismatch = null,
+    string? FinalCompareDirectory = null,
+    IReadOnlyList<TestlabFinalCompareArtifactResult>? FinalCompareArtifacts = null,
+    TestlabChannelSetupFormalResult? ChannelSetupFormalResult = null,
+    TestlabSineSetupFormalResult? SineSetupFormalResult = null,
+    TestlabAdvancedControlSetupFormalResult? AdvancedControlSetupFormalResult = null,
+    TestlabNotchProfilesFormalResult? NotchProfilesFormalResult = null,
+    TestlabProfileEditorFormalResult? ProfileEditorFormalResult = null
 );
 
 public sealed record TestlabTabSwitchResult(
@@ -4717,6 +5117,79 @@ public sealed record TestlabChildWindowCaptureResult(
     bool ChildWindowClosed = false,
     string? ReturnedToParentScreenshotPath = null,
     string? ErrorMessage = null
+);
+
+public sealed record TestlabFinalCompareArtifactResult(
+    string Key,
+    string FileName,
+    string Path,
+    string SourceType,
+    string? SourceTabName = null,
+    string? SourceWindowKey = null,
+    int? NotchProfileRowIndex = null
+);
+
+public sealed record TestlabChannelSetupFormalResult(
+    int ChunkCount,
+    int UniqueChunkCount,
+    string? StitchedScreenshotPath,
+    string? FinalCompareScreenshotPath,
+    bool FlowVerified
+);
+
+public sealed record TestlabSineSetupFormalResult(
+    int ChannelParametersChunkCount,
+    int ChannelParametersUniqueChunkCount,
+    string? ChannelParametersStitchedScreenshotPath,
+    string? ChannelParametersFinalCompareScreenshotPath,
+    string? ControlPanelFinalCompareScreenshotPath,
+    bool FlowVerified
+);
+
+public sealed record TestlabAdvancedControlSetupFormalResult(
+    bool WindowOpened,
+    string? OpenedWindowTitle,
+    string? MeasurementsFinalCompareScreenshotPath,
+    string? SafetyFinalCompareScreenshotPath,
+    string? ThroughputRecordingFinalCompareScreenshotPath,
+    bool ChildWindowClosed,
+    bool ReturnedToParent,
+    string? ReturnedToParentScreenshotPath,
+    string? ErrorMessage,
+    bool FlowVerified
+);
+
+public sealed record TestlabNotchProfileRowFormalResult(
+    int TargetRowIndex,
+    int ChunkCount,
+    int UniqueChunkCount,
+    string? StitchedScreenshotPath,
+    string? FinalCompareScreenshotPath,
+    bool ChildWindowClosed,
+    bool FlowVerified
+);
+
+public sealed record TestlabNotchProfilesFormalResult(
+    int RequestedRowCount,
+    int CompletedRowCount,
+    bool CountMatched,
+    int? FailedRowIndex,
+    IReadOnlyList<TestlabNotchProfileRowFormalResult> Rows,
+    bool FlowVerified
+);
+
+public sealed record TestlabProfileEditorFormalResult(
+    bool WindowOpened,
+    string? OpenedWindowTitle,
+    int ChunkCount,
+    int UniqueChunkCount,
+    string? StitchedScreenshotPath,
+    string? FinalCompareScreenshotPath,
+    bool ChildWindowClosed,
+    bool ReturnedToParent,
+    string? ReturnedToParentScreenshotPath,
+    string? ErrorMessage,
+    bool FlowVerified
 );
 
 public sealed record TestlabNotchProfileScanResult(
