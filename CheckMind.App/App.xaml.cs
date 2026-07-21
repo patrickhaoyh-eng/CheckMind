@@ -97,12 +97,27 @@ public partial class App : System.Windows.Application
             var cfgStore = new AppConfigStore();
             var cfg = cfgStore.LoadOrCreateDefault();
             var uiCfg = cfg.AutomationUi ?? new AutomationUiConfig();
-            var promptEnabled = !uiCfg.SuppressMouseCapturePrompt;
+            var consentPromptEnabled = !uiCfg.SuppressMouseCapturePrompt;
             var promptEnv = Environment.GetEnvironmentVariable("CHECKMIND_CAPTURE_PROMPT");
             if (!string.IsNullOrWhiteSpace(promptEnv))
             {
-                promptEnabled = !string.Equals(promptEnv.Trim(), "0", StringComparison.OrdinalIgnoreCase) &&
-                                !string.Equals(promptEnv.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+                consentPromptEnabled = !string.Equals(promptEnv.Trim(), "0", StringComparison.OrdinalIgnoreCase) &&
+                                       !string.Equals(promptEnv.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+            }
+
+            var consentPromptEnv = Environment.GetEnvironmentVariable("CHECKMIND_CAPTURE_CONSENT_PROMPT");
+            if (!string.IsNullOrWhiteSpace(consentPromptEnv))
+            {
+                consentPromptEnabled = !string.Equals(consentPromptEnv.Trim(), "0", StringComparison.OrdinalIgnoreCase) &&
+                                       !string.Equals(consentPromptEnv.Trim(), "false", StringComparison.OrdinalIgnoreCase);
+            }
+
+            var finishedPromptEnabled = !uiCfg.SuppressCaptureFinishedPrompt;
+            var finishedPromptEnv = Environment.GetEnvironmentVariable("CHECKMIND_CAPTURE_FINISHED_PROMPT");
+            if (!string.IsNullOrWhiteSpace(finishedPromptEnv))
+            {
+                finishedPromptEnabled = !string.Equals(finishedPromptEnv.Trim(), "0", StringComparison.OrdinalIgnoreCase) &&
+                                        !string.Equals(finishedPromptEnv.Trim(), "false", StringComparison.OrdinalIgnoreCase);
             }
 
             var overlayEnabled = uiCfg.OverlayEnabled;
@@ -113,10 +128,10 @@ public partial class App : System.Windows.Application
                                  string.Equals(overlayEnv.Trim(), "true", StringComparison.OrdinalIgnoreCase);
             }
 
-            _ = RunTestlabAsync(cfgStore, cfg, promptEnabled, overlayEnabled);
+            _ = RunTestlabAsync(cfgStore, cfg, consentPromptEnabled, finishedPromptEnabled, overlayEnabled);
             return;
 
-            async Task RunTestlabAsync(AppConfigStore cfgStore, AppConfig cfg, bool promptEnabled, bool overlayEnabled)
+            async Task RunTestlabAsync(AppConfigStore cfgStore, AppConfig cfg, bool consentPromptEnabled, bool finishedPromptEnabled, bool overlayEnabled)
             {
                 CaptureOverlayService? overlay = null;
                 string? runDirectory = null;
@@ -134,7 +149,7 @@ public partial class App : System.Windows.Application
                     File.WriteAllText(markerPath, run.RunDirectory);
                     TestlabDebugMarkers.WritePhase("app.run_created", runDirectory);
 
-                    if (promptEnabled)
+                    if (consentPromptEnabled)
                     {
                         TestlabDebugMarkers.WritePhase("app.before_consent_dialog", runDirectory);
                         var consent = new CaptureConsentDialog();
@@ -156,7 +171,7 @@ public partial class App : System.Windows.Application
                         {
                             var nextUi = (cfg.AutomationUi ?? new AutomationUiConfig()) with { SuppressMouseCapturePrompt = true };
                             cfgStore.Save(cfg with { AutomationUi = nextUi });
-                            promptEnabled = false;
+                            consentPromptEnabled = false;
                         }
                     }
 
@@ -299,7 +314,7 @@ public partial class App : System.Windows.Application
                     TestlabDebugMarkers.WritePhase("app.after_runner_run", runDirectory);
                     Environment.ExitCode = 0;
 
-                    if (promptEnabled)
+                    if (finishedPromptEnabled)
                     {
                         TestlabDebugMarkers.WritePhase("app.before_finished_dialog", runDirectory);
                         var done = new CaptureFinishedDialog(run.RunDirectory);
